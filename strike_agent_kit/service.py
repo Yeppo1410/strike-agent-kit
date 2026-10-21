@@ -78,10 +78,16 @@ class AgentService:
         markets = self.backend.get_markets()
         equity = D(account["wallet_balance"]) + D(account.get("unrealized_pnl") or "0")
         sizes = {p["symbol"]: D(p["size"]) for p in positions}
+        marks = {s: D(m["mark_price"]) for s, m in markets.items()}
+        coll_price = None
+        if self.settings.collateral_asset:
+            coll_price = marks.get(self.normalize_symbol(self.settings.collateral_asset))
+            if not coll_price:
+                raise OrderRejected(f"Collateral asset {self.settings.collateral_asset} has no Strike market to price it.")
         state = AccountState(
             positions=sizes,
-            marks={s: D(m["mark_price"]) for s, m in markets.items()},
-            day_pnl_usd=self.journal.day_pnl(equity, D(account["wallet_balance"]), sizes),
+            marks=marks,
+            day_pnl_usd=self.journal.day_pnl(equity, D(account["wallet_balance"]), sizes, coll_price),
             current_leverage={p["symbol"]: int(p["leverage"]) for p in positions if p.get("leverage")},
         )
         return state, account, equity
@@ -143,7 +149,9 @@ class AgentService:
         spot: holdings outside Strike, e.g. {"ADA": 5000}, to see how well they are hedged.
         collateral_asset: set when the Strike margin is held in a volatile asset (e.g. "ADA"), so the
         wallet balance moves with that asset's price. Approximation: treats the whole wallet as that asset.
+        Defaults to STRIKE_COLLATERAL_ASSET.
         """
+        collateral_asset = collateral_asset or self.settings.collateral_asset
         moves = {self.normalize_symbol(k): D(str(v)) for k, v in (moves or {}).items()}
         default_move = D(str(all_markets_pct)) if all_markets_pct is not None else D(0)
         markets = self.backend.get_markets()
@@ -206,7 +214,11 @@ class AgentService:
                         "note": "Approximation: treats the whole wallet balance as held in this asset."}
 
         equity_after = equity + perp_pnl + collateral_pnl
-        day_after = state.day_pnl_usd + perp_pnl  # collateral moves are excluded from day PnL by design
+        # Collateral revaluation counts toward day PnL (and the daily loss limit) only when the kit
+        # knows the margin asset; otherwise the live day PnL would not see it either.
+        tracked = bool(coll) and self.normalize_symbol(collateral_asset or "") == self.normalize_symbol(
+            self.settings.collateral_asset or "")
+        day_after = state.day_pnl_usd + perp_pnl + (collateral_pnl if tracked else D(0))
         liquidated = bool(rows) and equity_after <= maint_after
         warnings = []
         if liquidated:
@@ -219,6 +231,9 @@ class AgentService:
             warnings.append(f"{r['asset']} spot is {r['hedged_pct']}% hedged; hedge_exposure can cover it.")
         if coll and collateral_pnl < 0 and any(r.get("asset") == coll["asset"] for r in spot_rows):
             warnings.append(f"Margin is held in {coll['asset']}, which adds to the same exposure as the spot holding.")
+        if coll and not tracked:
+            warnings.append(f"STRIKE_COLLATERAL_ASSET is not set to {coll['asset']}, so the daily loss limit "
+                            "does not see collateral losses. Set it to count them.")
 
         return {
             "scenario": {"moves_pct": {k: float(v) for k, v in moves.items()},

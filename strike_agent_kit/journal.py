@@ -45,15 +45,21 @@ class Journal:
     def _write_state(self, state: dict[str, Any]) -> None:
         self.state_path.write_text(json.dumps(state, indent=2, default=_default))
 
-    def day_pnl(self, equity: D, wallet: D | None = None, positions: dict[str, D] | None = None) -> D:
+    def day_pnl(self, equity: D, wallet: D | None = None, positions: dict[str, D] | None = None,
+                collateral_price: D | None = None) -> D:
         """Trading PnL since the first reading of the current UTC day.
 
-        Plain equity change would count deposits, withdrawals and collateral revaluation
-        (e.g. margin held in ADA) as profit or loss. So when the wallet balance moves while
-        the open positions are unchanged since the previous reading, that move is booked as
-        an external flow and left out. Wallet changes that coincide with a position change
-        (realized PnL, fees) still count. Funding paid on unchanged positions is small and
-        is excluded along with the flows.
+        Plain equity change would count deposits and withdrawals as profit or loss. So when
+        the wallet balance moves while the open positions are unchanged since the previous
+        reading, that move is booked as an external flow and left out. Wallet changes that
+        coincide with a position change (realized PnL, fees) still count. Funding paid on
+        unchanged positions is small and is excluded along with the flows.
+
+        collateral_price: USD price of the collateral asset when margin is held in a volatile
+        asset (e.g. ADA). The wallet move is then split in two: the revaluation of the
+        collateral already held (price change at constant quantity) counts as PnL, and only
+        the change in quantity (a deposit or withdrawal) is booked as a flow. Without it the
+        wallet is treated as USD.
         """
         today = datetime.now(timezone.utc).date().isoformat()
         state = self._read_state()
@@ -61,16 +67,22 @@ class Journal:
         if state.get("day") != today:
             state.update(day=today, day_start_equity=str(equity), day_flows="0")
         elif wallet is not None and "last_wallet" in state and state.get("last_positions") == pos:
-            delta = wallet - D(state["last_wallet"])
+            last_wallet = D(state["last_wallet"])
+            last_price = D(state["last_collateral_price"]) if state.get("last_collateral_price") else None
+            revaluation = D(0)
+            if collateral_price and last_price:
+                revaluation = last_wallet * (collateral_price / last_price - 1)
+            delta = wallet - last_wallet - revaluation
             if delta != 0:
                 state["day_flows"] = str(D(state.get("day_flows", "0")) + delta)
         if wallet is not None:
             state["last_wallet"], state["last_positions"] = str(wallet), pos
+            state["last_collateral_price"] = str(collateral_price) if collateral_price else None
         self._write_state(state)
         return equity - D(state["day_start_equity"]) - D(state.get("day_flows", "0"))
 
     def day_flows(self) -> D:
-        """External wallet changes (deposits, withdrawals, collateral moves) excluded from today's PnL."""
+        """External wallet changes (deposits, withdrawals) excluded from today's PnL."""
         return D(self._read_state().get("day_flows", "0"))
 
     def issue_token(self, key: str, ttl_s: int = 300) -> str:

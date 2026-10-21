@@ -38,6 +38,7 @@ class Settings:
     state_path: Path
     hyperliquid_url: str
     use_hyperliquid: bool
+    collateral_asset: str | None = None  # e.g. "ADA" when margin is held in ADA; None = USD
 
     @property
     def is_mock(self) -> bool:
@@ -81,4 +82,5 @@ class Settings:
             state_path=data_dir / "state.json",
             hyperliquid_url=os.environ.get("HYPERLIQUID_INFO_URL", HYPERLIQUID_INFO_URL),
             use_hyperliquid=os.environ.get("STRIKE_USE_HYPERLIQUID", "1") != "0",
+            collateral_asset=(os.environ.get("STRIKE_COLLATERAL_ASSET") or "").strip().upper() or None,
         )

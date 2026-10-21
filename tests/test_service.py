@@ -153,6 +153,76 @@ def test_losses_still_count_after_a_deposit(svc):
     assert svc.place_order("ADA", "sell", notional_usd=100, dry_run=False)["status"] == "blocked"
 
 
+def _ada_collateral(svc):
+    svc.settings.collateral_asset = "ADA"
+    svc.backend.wallet = D("1140")
+    svc.place_order("SOL", "buy", notional_usd=12, dry_run=False)
+    svc.get_account()  # day start
+
+
+def _reprice_wallet(svc, pct):
+    """Margin held in ADA: the USD wallet moves with the ADA mark."""
+    svc.backend.move_price("ADA-USD", pct)
+    svc.backend.wallet *= 1 + D(str(pct)) / 100
+
+
+def test_collateral_price_drop_counts_as_loss(svc):
+    _ada_collateral(svc)
+    _reprice_wallet(svc, -20)  # ~ -228 USD of ADA margin, positions unchanged
+    acct = svc.get_account()
+    assert acct["day_pnl_usd"] < -220
+    assert abs(acct["day_external_flows_usd"]) < 0.01
+
+
+def test_collateral_loss_trips_daily_limit(svc):
+    _ada_collateral(svc)
+    _reprice_wallet(svc, -25)  # ~ -285 USD
+    res = svc.place_order("ADA", "sell", notional_usd=100, dry_run=False)
+    assert res["status"] == "blocked"
+    assert any(v["rule"] == "daily_loss_limit" for v in res["guardrails"]["violations"])
+
+
+def test_ada_deposit_is_still_a_flow_with_ada_collateral(svc):
+    _ada_collateral(svc)
+    _reprice_wallet(svc, -10)
+    svc.get_account()
+    svc.backend.wallet += D("500")  # deposit at the new price
+    acct = svc.get_account()
+    assert abs(acct["day_external_flows_usd"] - 500) < 0.01
+    assert -120 < acct["day_pnl_usd"] < -100  # only the price drop counts
+
+
+def test_deposit_and_price_move_in_one_reading_are_split(svc):
+    _ada_collateral(svc)
+    _reprice_wallet(svc, -20)
+    svc.backend.wallet += D("300")  # deposit lands before the next reading
+    acct = svc.get_account()
+    assert abs(acct["day_external_flows_usd"] - 300) < 0.01
+    assert acct["day_pnl_usd"] < -220
+
+
+def test_usd_collateral_keeps_old_behaviour(svc):
+    svc.get_account()
+    svc.backend.move_price("ADA-USD", -20)  # irrelevant without ADA collateral or positions
+    svc.backend.wallet -= D("228")  # treated as a withdrawal
+    acct = svc.get_account()
+    assert abs(acct["day_pnl_usd"]) < 1
+
+
+def test_what_if_counts_tracked_collateral_toward_day_pnl(svc):
+    _ada_collateral(svc)
+    res = svc.what_if({"ADA": -25}, spot={"ADA": 5000})  # collateral comes from settings
+    assert res["collateral"]["pnl_usd"] < -280
+    assert res["account"]["day_pnl_after_usd"] < -280
+    assert any("Daily loss limit" in w for w in res["warnings"])
+
+
+def test_what_if_warns_when_collateral_is_not_tracked(svc):
+    res = svc.what_if({"ADA": -20}, collateral_asset="ADA")
+    assert abs(res["account"]["day_pnl_after_usd"]) < 1
+    assert any("STRIKE_COLLATERAL_ASSET" in w for w in res["warnings"])
+
+
 def test_close_retries_with_wider_slippage_on_thin_book(svc):
     svc.place_order("SOL", "buy", notional_usd=100, dry_run=False)
     svc.backend.book_gap["SOL-USD"] = D("0.02")  # book 2% from mark: 0.5% close fails, 3% works
