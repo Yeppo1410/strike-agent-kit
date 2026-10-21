@@ -135,6 +135,110 @@ class AgentService:
             "open_orders": len(self.backend.get_open_orders()),
         }
 
+    def what_if(self, moves: dict[str, float] | None = None, all_markets_pct: float | None = None,
+                spot: dict[str, float] | None = None, collateral_asset: str | None = None) -> dict[str, Any]:
+        """Read-only price scenario: re-price positions, spot holdings and (optionally) collateral.
+
+        moves: % change per asset, e.g. {"ADA": -20}. all_markets_pct: % change for every other market.
+        spot: holdings outside Strike, e.g. {"ADA": 5000}, to see how well they are hedged.
+        collateral_asset: set when the Strike margin is held in a volatile asset (e.g. "ADA"), so the
+        wallet balance moves with that asset's price. Approximation: treats the whole wallet as that asset.
+        """
+        moves = {self.normalize_symbol(k): D(str(v)) for k, v in (moves or {}).items()}
+        default_move = D(str(all_markets_pct)) if all_markets_pct is not None else D(0)
+        markets = self.backend.get_markets()
+        account = self.backend.get_account()
+        positions = self.backend.get_positions()
+        policy = self.policies.load()
+        state, _, equity = self._state()
+
+        def move_for(symbol: str) -> D:
+            return moves.get(symbol, default_move)
+
+        def shocked(symbol: str) -> tuple[D, D]:
+            mark = D(markets[symbol]["mark_price"]) if symbol in markets else D(0)
+            return mark, mark * (1 + move_for(symbol) / 100)
+
+        def maint(symbol: str, notional: D) -> D:
+            tiers = (markets.get(symbol) or {}).get("margin_tiers") or [{}]
+            tier = next((t for t in tiers if D(str(t.get("max_notional") or "0")) >= notional), tiers[-1])
+            return notional * D(str(tier.get("maintenance_margin_rate") or "0")) + D(str(tier.get("maintenance_amount") or "0"))
+
+        rows, perp_pnl, maint_now, maint_after = [], D(0), D(0), D(0)
+        for p in positions:
+            sym, size = p["symbol"], D(p["size"])
+            if size == 0:
+                continue
+            mark, new = shocked(sym)
+            pnl = (new - mark) * size
+            perp_pnl += pnl
+            maint_now += maint(sym, abs(size) * mark)
+            maint_after += maint(sym, abs(size) * new)
+            rows.append({"symbol": sym, "side": "long" if size > 0 else "short", "size": str(abs(size)),
+                         "move_pct": float(move_for(sym)), "mark_now": _f(mark, 6), "mark_after": _f(new, 6),
+                         "pnl_usd": _f(pnl, 2)})
+
+        spot_rows, spot_pnl = [], D(0)
+        for asset, amount in (spot or {}).items():
+            sym = self.normalize_symbol(asset)
+            if sym not in markets:
+                spot_rows.append({"asset": asset, "error": f"No Strike market {sym} to price it."})
+                continue
+            mark, new = shocked(sym)
+            amt = D(str(amount))
+            pnl = (new - mark) * amt
+            spot_pnl += pnl
+            perp = next((D(p["size"]) for p in positions if p["symbol"] == sym), D(0))
+            hedged = min(max(-perp / amt, D(0)), D(1)) if amt > 0 else D(0)
+            spot_rows.append({"asset": asset.upper(), "amount": str(amt), "value_now_usd": _f(amt * mark, 2),
+                              "value_after_usd": _f(amt * new, 2), "pnl_usd": _f(pnl, 2),
+                              "hedged_pct": _f(hedged * 100, 1)})
+
+        collateral_pnl = D(0)
+        coll = None
+        if collateral_asset:
+            sym = self.normalize_symbol(collateral_asset)
+            if sym in markets:
+                wallet = D(account["wallet_balance"])
+                collateral_pnl = wallet * move_for(sym) / 100
+                coll = {"asset": collateral_asset.upper(), "wallet_usd": _f(wallet, 2),
+                        "move_pct": float(move_for(sym)), "pnl_usd": _f(collateral_pnl, 2),
+                        "note": "Approximation: treats the whole wallet balance as held in this asset."}
+
+        equity_after = equity + perp_pnl + collateral_pnl
+        day_after = state.day_pnl_usd + perp_pnl  # collateral moves are excluded from day PnL by design
+        liquidated = bool(rows) and equity_after <= maint_after
+        warnings = []
+        if liquidated:
+            warnings.append("Account would be at or below maintenance margin: liquidation risk.")
+        if policy.daily_loss_limit_usd > 0 and day_after <= -policy.daily_loss_limit_usd:
+            warnings.append(f"Daily loss limit ({policy.daily_loss_limit_usd} USD) would trip: "
+                            "new risk would be blocked, closes still allowed.")
+        unhedged = [r for r in spot_rows if "hedged_pct" in r and r["hedged_pct"] < 50 and r["pnl_usd"] < 0]
+        for r in unhedged:
+            warnings.append(f"{r['asset']} spot is {r['hedged_pct']}% hedged; hedge_exposure can cover it.")
+        if coll and collateral_pnl < 0 and any(r.get("asset") == coll["asset"] for r in spot_rows):
+            warnings.append(f"Margin is held in {coll['asset']}, which adds to the same exposure as the spot holding.")
+
+        return {
+            "scenario": {"moves_pct": {k: float(v) for k, v in moves.items()},
+                         "all_other_markets_pct": float(default_move)},
+            "positions": rows, "spot": spot_rows, "collateral": coll,
+            "totals": {"perp_pnl_usd": _f(perp_pnl, 2), "spot_pnl_usd": _f(spot_pnl, 2),
+                       "collateral_pnl_usd": _f(collateral_pnl, 2),
+                       "net_pnl_usd": _f(perp_pnl + spot_pnl + collateral_pnl, 2)},
+            "account": {"equity_now_usd": _f(equity, 2), "equity_after_usd": _f(equity_after, 2),
+                        "maintenance_margin_now_usd": _f(maint_now, 2),
+                        "maintenance_margin_after_usd": _f(maint_after, 2),
+                        "liquidation_buffer_after_usd": _f(equity_after - maint_after, 2),
+                        "liquidation_risk": liquidated,
+                        "day_pnl_after_usd": _f(day_after, 2),
+                        "daily_loss_limit_usd": _f(policy.daily_loss_limit_usd, 2)},
+            "warnings": warnings,
+            "note": "Read-only estimate at a single instant: ignores fees, funding, slippage and liquidation "
+                    "mechanics beyond the maintenance-margin check.",
+        }
+
     def get_guardrails(self) -> dict[str, Any]:
         return {"policy": self.policies.load().to_dict(), "policy_file": str(self.settings.guardrails_path),
                 "note": "Edit the policy file to change limits. The agent can engage the kill switch, "

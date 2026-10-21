@@ -70,6 +70,22 @@ def get_account() -> dict[str, Any]:
 
 
 @mcp.tool(annotations=READ)
+def what_if(moves: dict[str, float] | None = None, all_markets_pct: float | None = None,
+            spot: dict[str, float] | None = None, collateral_asset: str | None = None) -> dict[str, Any]:
+    """Read-only price scenario ("what if ADA drops 20%?"). Nothing is traded.
+
+    moves: % change per asset, e.g. {"ADA": -20}. all_markets_pct: % change applied to every other market.
+    spot: the user's holdings outside Strike, e.g. {"ADA": 5000}, to show how well they are hedged.
+    collateral_asset: if the user's Strike margin is held in a volatile asset (e.g. "ADA"), pass it so the
+    wallet balance is re-priced too. Returns PnL per position, spot and collateral, equity after, the
+    maintenance-margin buffer, whether the daily loss limit would trip, and warnings.
+    Use this before suggesting a hedge, and show the user the numbers.
+    """
+    with service.lock:
+        return service.what_if(moves, all_markets_pct, spot, collateral_asset)
+
+
+@mcp.tool(annotations=READ)
 def get_guardrails() -> dict[str, Any]:
     """The risk policy every order is checked against (limits, allowed markets, kill switch)."""
     with service.lock:

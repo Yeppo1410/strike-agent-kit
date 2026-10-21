@@ -272,3 +272,29 @@ def test_pending_requests_expire(svc, monkeypatch):
     monkeypatch.setattr(j.time, "time", lambda: real() + 16 * 60)
     assert svc.get_order_status(aid)["status"] == "expired"
     assert "expired" in svc.decide_approval_by_human(aid, approve=True)["error"]
+
+
+def test_what_if_reprices_positions_spot_and_collateral(svc):
+    token = svc.place_order("ADA", "sell", notional_usd=2000, dry_run=True)["confirmation_token"]
+    svc.place_order("ADA", "sell", notional_usd=2000, dry_run=False, confirmation_token=token)
+    short = D(svc.backend.get_positions()[0]["size"])
+    res = svc.what_if({"ADA": -20}, spot={"ADA": float(-short) * 2}, collateral_asset="ADA")
+    pos, spot = res["positions"][0], res["spot"][0]
+    assert pos["pnl_usd"] > 0 and spot["pnl_usd"] < 0
+    assert abs(pos["pnl_usd"] + spot["pnl_usd"] / 2) < 1  # short covers half the spot
+    assert spot["hedged_pct"] == 50.0
+    assert res["collateral"]["pnl_usd"] < 0
+    assert res["account"]["liquidation_risk"] is False
+    assert any("Margin is held in ADA" in w for w in res["warnings"])
+    assert svc.backend.get_positions()[0]["size"] == str(short)  # nothing traded
+
+
+def test_what_if_flags_daily_limit_and_liquidation(svc):
+    svc.backend.wallet = D("600")
+    svc.place_order("BTC", "buy", notional_usd=2500, dry_run=False, confirmation_token=svc.place_order(
+        "BTC", "buy", notional_usd=2500, dry_run=True)["confirmation_token"])
+    svc.get_account()
+    res = svc.what_if(all_markets_pct=-30)
+    assert res["account"]["liquidation_risk"] is True
+    assert any("Daily loss limit" in w for w in res["warnings"])
+    assert any("liquidation" in w.lower() for w in res["warnings"])

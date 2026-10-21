@@ -55,10 +55,11 @@ It uses Strike's API wallets, which can trade but cannot withdraw. Even a misbeh
 | `get_funding_board` | Strike vs Hyperliquid hourly funding per market, ranked by spread. Shows the delta-neutral direction, the APR, and how many hours the spread must last to cover taker fees on both venues. |
 | `get_account` | Equity, available balance, positions, today's PnL against the daily loss limit, and the kill switch state |
 | `get_markets` | Mark price, funding, max leverage and size rules per market |
+| `what_if` | "What happens if ADA drops 20%?" Re-prices your positions, spot holdings outside Strike and (optionally) ADA-denominated margin. Shows PnL, equity, the maintenance-margin buffer, whether the daily loss limit would trip, and how well your spot is hedged. Read-only. |
 | `hedge_exposure` | "I hold 3,000 ADA, keep me hedged." Moves the perp position to −spot × ratio and trades only the difference. |
 | `place_order` | Market and limit orders. Defaults to preview (`dry_run=true`). New risk then waits for your approval. |
 | `get_order_status` | Outcome of an order that was waiting for you: pending, executed, rejected, expired, or blocked on approval |
-| `close_position` | Reduce-only close. Always allowed. |
+| `close_position` | Reduce-only close. Always allowed. If the book is too thin for 0.5% slippage it retries once at `close_max_slippage`, then tells you plainly instead of looping. |
 | `cancel_open_orders` | Cancels open orders on all markets or on one market |
 | `engage_kill_switch` | Blocks all new risk immediately. The agent can turn it on but not off. |
 | `get_guardrails`, `get_action_log` | The policy, and an audit log of every preview, block and order together with the agent's stated reason |
@@ -188,7 +189,7 @@ strike_agent_kit/
   service.py      Order pipeline, funding board, hedging, kill switch
   journal.py      Audit log, day-start equity, confirmation tokens
   mock.py         In-memory Strike + Hyperliquid for tests and demos
-  server.py       MCP server (11 tools, annotated read-only vs trading)
+  server.py       MCP server (12 tools, annotated read-only vs trading)
   dashboard.py    Local control panel (stdlib HTTP, single page)
 scripts/
   demo_walkthrough.py   Demo rehearsal over MCP stdio
