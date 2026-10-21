@@ -127,7 +127,7 @@ def parse_change(name: str, value: Any) -> Any:
         raise ValueError(f"{name} is a fraction between 0 and 0.2 (0.01 = 1%).")
     if name in ("max_order_notional_usd", "max_position_notional_usd", "max_total_notional_usd") and num == 0:
         raise ValueError(f"{name} must be above zero. Use engage_kill_switch to stop all new risk.")
-    return float(num)
+    return int(num) if num == num.to_integral_value() else float(num)  # keep 250, not 250.0, in the file
 
 
 def classify_change(name: str, old: Any, new: Any) -> str:

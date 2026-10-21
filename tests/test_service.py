@@ -460,6 +460,13 @@ def test_invalid_part_rejects_the_whole_proposal(svc):
     assert res["status"] == "invalid" and _policy(svc).max_leverage == 5
 
 
+def test_whole_numbers_stay_whole_in_the_policy_file(svc):
+    svc.propose_guardrail_change({"daily_loss_limit_usd": 200.0, "max_slippage": 0.005})
+    raw = json.loads(svc.settings.guardrails_path.read_text())
+    assert raw["daily_loss_limit_usd"] == 200 and isinstance(raw["daily_loss_limit_usd"], int)
+    assert raw["max_slippage"] == 0.005
+
+
 def test_unchanged_values(svc):
     assert svc.propose_guardrail_change({"max_leverage": 5})["status"] == "unchanged"
 
