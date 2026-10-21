@@ -1,4 +1,4 @@
-# Demo video script (about 100 seconds)
+# Demo video script (about 110 seconds)
 
 **Setup**
 - Screen split in two: Claude Desktop with the `strike` MCP server on the left, the dashboard (`http://127.0.0.1:8787`) on the right.
@@ -14,10 +14,13 @@
 | 0:38 | *"What if ADA drops 30%? My margin is in ADA too."* The agent runs `what_if`: spot hedged 100%, but the ADA margin loses about $15 and the daily loss limit would trip. | "My spot is hedged, but my collateral isn't. The agent sees the margin risk and warns me before it happens." |
 | 0:46 | Say casually: *"BTC looks strong today, huh."* If the agent proposes anything, a card appears; click **Reject**. | "Even if the AI misreads me, nothing reaches Strike without my click." |
 | 0:54 | *"BTC funding looks juicy, short $500 at 10x."* A **blocked** chip appears in the dashboard. | "Here the guardrails win. The agent tells me which limit it hit, and it's instructed never to split the order to get around it." |
-| 1:03 | *"Stop all new risk."* The kill switch banner on the dashboard turns red. | "The agent can pull the brake, but only I can release it, here in my dashboard." |
-| 1:11 | *"Buy a little BTC"* is blocked. *"Close my ADA hedge"* fills. | "New risk is blocked, but closing always works. The agent can never trap me in a position." |
-| 1:21 | Click **Release** on the dashboard. | "Releasing is a human decision." |
-| 1:26 | Builder code slide | "Distributed through Builder Connect, every agent trade carries a builder fee, so good agents with tight guardrails become a business on Strike." |
+| 1:03 | *"Then raise my max order to $600."* An approval card appears: **Max per order $150 → $600**. Click **Reject**. Then *"Lower my daily loss limit to $10."* It applies at once and the dashboard shows the new limit. | "The agent can tighten its own limits, but loosening them is my call, in the dashboard." |
+| 1:13 | *"Stop all new risk."* The kill switch banner on the dashboard turns red. | "The agent can pull the brake, but only I can release it, here in my dashboard." |
+| 1:21 | *"Buy a little BTC"* is blocked. *"Close my ADA hedge"* fills. | "New risk is blocked, but closing always works. The agent can never trap me in a position." |
+| 1:31 | Click **Release** on the dashboard. | "Releasing is a human decision." |
+| 1:36 | Builder code slide | "Distributed through Builder Connect, every agent trade carries a builder fee, so good agents with tight guardrails become a business on Strike." |
+
+If the video runs long, the 0:46 "BTC looks strong" beat is the easiest to cut: the approval card already makes the same point at 0:20.
 
 **Fallback:** run `python scripts/dashboard_preview.py` plus the mock walkthrough, and say on screen that it's simulated. In mock mode the walkthrough also simulates a 25% ADA drop (`simulate_price_move`, steps 5b–5e) and shows the daily loss limit blocking the next trade; that tool doesn't exist on testnet or mainnet.
 
@@ -45,6 +48,7 @@
 3. Run `python scripts/testnet_check.py`. Despite the name, it works for mainnet too and places no orders.
 4. Check the minimum order size per market in the output of `get_markets`. If a market's minimum notional is above $150, raise `max_order_notional_usd` in the preset, or drop that market from the demo.
 5. Record the demo, then close every position: *"Close all my positions."*
+6. The 1:03 beat changes `guardrails.mainnet.json` (daily loss limit $10). Put it back afterwards with `git checkout guardrails.mainnet.json`.
 
 ## Submission checklist
 

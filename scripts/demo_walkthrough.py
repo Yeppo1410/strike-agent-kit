@@ -93,6 +93,15 @@ async def main() -> None:
                     "place_order", {"symbol": "ETH", "side": "buy", "notional_usd": 200, "dry_run": False,
                                     "reason": "buy the dip"}))
 
+            loosen = show("5f. Agent asks to raise the max order size -> waits for the human", await s.call_tool(
+                "propose_guardrail_change", {"changes": {"max_order_notional_usd": 6000},
+                                             "reason": "user asked to raise max order to $6,000"}))
+            human_clicks(loosen["approval_id"], "reject")
+            show("5g. Agent tightens the daily loss limit -> applies at once", await s.call_tool(
+                "propose_guardrail_change", {"changes": {"daily_loss_limit_usd": 100},
+                                             "reason": "user asked to lower the daily loss limit"}))
+            show("5h. Limits now in force", await s.call_tool("get_guardrails", {}))
+
             show("6. Engage kill switch", await s.call_tool(
                 "engage_kill_switch", {"reason": "demo: user wants to stop new risk"}))
             show("7. New risk is blocked", await s.call_tool(

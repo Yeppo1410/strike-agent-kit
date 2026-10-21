@@ -376,3 +376,105 @@ def test_what_if_flags_daily_limit_and_liquidation(svc):
     assert res["account"]["liquidation_risk"] is True
     assert any("Daily loss limit" in w for w in res["warnings"])
     assert any("liquidation" in w.lower() for w in res["warnings"])
+
+
+# ---- guardrail changes proposed by the agent ----------------------------------
+def _policy(svc):
+    return svc.policies.load()
+
+
+def test_tightening_applies_immediately(svc):
+    res = svc.propose_guardrail_change({"daily_loss_limit_usd": 100, "max_leverage": 2}, reason="losses piling up")
+    assert res["status"] == "applied"
+    assert _policy(svc).daily_loss_limit_usd == 100 and _policy(svc).max_leverage == 2
+    assert svc.list_approvals() == []
+    assert svc.get_action_log(1)[0]["event"] == "guardrails_tightened"
+
+
+def test_loosening_waits_for_human_and_changes_nothing(svc):
+    res = svc.propose_guardrail_change({"daily_loss_limit_usd": 500}, reason="user asked")
+    assert res["status"] == "pending_approval"
+    assert _policy(svc).daily_loss_limit_usd == 250
+    assert svc.get_order_status(res["approval_id"])["status"] == "pending"
+    assert svc.get_order_status(res["approval_id"])["changes"]["daily_loss_limit_usd"]["to"] == 500
+
+
+def test_human_approves_loosening(svc):
+    res = svc.propose_guardrail_change({"max_order_notional_usd": 4000}, reason="user asked")
+    assert svc.decide_approval_by_human(res["approval_id"], True)["status"] == "applied"
+    assert _policy(svc).max_order_notional_usd == 4000
+    assert svc.get_order_status(res["approval_id"])["status"] == "applied"
+    assert svc.decide_approval_by_human(res["approval_id"], True)["status"] == "applied"  # no double apply
+    assert svc.get_action_log(1)[0]["event"] == "guardrails_changed_by_human"
+
+
+def test_human_rejects_loosening(svc):
+    res = svc.propose_guardrail_change({"max_leverage": 10}, reason="user asked")
+    assert svc.decide_approval_by_human(res["approval_id"], False)["status"] == "rejected"
+    assert _policy(svc).max_leverage == 5
+
+
+def test_mixed_change_applies_tight_part_and_queues_loose_part(svc):
+    res = svc.propose_guardrail_change({"max_leverage": 3, "max_total_notional_usd": 20000})
+    assert res["status"] == "partially_applied"
+    assert _policy(svc).max_leverage == 3 and _policy(svc).max_total_notional_usd == 10000
+    assert set(res["pending"]) == {"max_total_notional_usd"}
+
+
+def test_switching_off_the_loss_limit_is_loosening(svc):
+    assert svc.propose_guardrail_change({"daily_loss_limit_usd": 0})["status"] == "pending_approval"
+    assert _policy(svc).daily_loss_limit_usd == 250
+
+
+def test_market_list_direction(svc):
+    assert svc.propose_guardrail_change({"allowed_markets": ["ADA", "BTC"]})["status"] == "applied"
+    assert _policy(svc).allowed_markets == ["ADA-USD", "BTC-USD"]
+    assert svc.propose_guardrail_change({"allowed_markets": ["ADA", "BTC", "SOL"]})["status"] == "pending_approval"
+    assert svc.propose_guardrail_change({"allowed_markets": []})["status"] == "pending_approval"  # [] = every market
+
+
+def test_approval_switch_direction(svc):
+    assert svc.propose_guardrail_change({"require_human_approval": True})["status"] == "applied"  # fixture has it off
+    assert svc.propose_guardrail_change({"require_human_approval": False})["status"] == "pending_approval"
+    assert _policy(svc).require_human_approval is True
+    svc.propose_guardrail_change({"auto_approve_below_usd": 50})  # raising auto-approve is loosening
+    assert _policy(svc).auto_approve_below_usd == 0
+
+
+def test_exit_related_limits_always_wait(svc):
+    assert svc.propose_guardrail_change({"close_max_slippage": 0.005})["status"] == "pending_approval"
+    assert svc.propose_guardrail_change({"allowed_order_types": ["limit"]})["status"] == "pending_approval"
+    assert _policy(svc).allowed_order_types == ["market", "limit"]
+
+
+def test_kill_switch_and_bad_values_are_refused(svc):
+    for changes in ({"kill_switch": False}, {"max_leverage": 0}, {"max_leverage": 2.5}, {"bogus": 1},
+                    {"max_order_notional_usd": 0}, {"max_slippage": 5}, {"daily_loss_limit_usd": -1}, {}):
+        assert svc.propose_guardrail_change(changes)["status"] == "invalid", changes
+    assert _policy(svc).to_dict() == svc.policies.load().to_dict()
+    assert _policy(svc).max_leverage == 5
+
+
+def test_invalid_part_rejects_the_whole_proposal(svc):
+    res = svc.propose_guardrail_change({"max_leverage": 2, "kill_switch": False})
+    assert res["status"] == "invalid" and _policy(svc).max_leverage == 5
+
+
+def test_unchanged_values(svc):
+    assert svc.propose_guardrail_change({"max_leverage": 5})["status"] == "unchanged"
+
+
+def test_tightened_limit_blocks_orders_right_away(svc):
+    svc.propose_guardrail_change({"max_order_notional_usd": 50})
+    res = svc.place_order("ADA", "sell", notional_usd=100, dry_run=True)
+    assert res["status"] == "blocked"
+    assert any(v["rule"] == "max_order_notional" for v in res["guardrails"]["violations"])
+
+
+def test_order_and_guardrail_approvals_share_the_queue(svc):
+    svc.policies.update({"require_human_approval": True})
+    order = svc.place_order("ADA", "sell", notional_usd=100, dry_run=False)
+    change = svc.propose_guardrail_change({"max_leverage": 8})
+    kinds = {a["id"]: a.get("kind", "order") for a in svc.list_approvals()}
+    assert kinds == {order["approval_id"]: "order", change["approval_id"]: "guardrail_change"}
+    assert svc.decide_approval_by_human(order["approval_id"], True)["status"] == "executed"

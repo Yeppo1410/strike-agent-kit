@@ -58,15 +58,16 @@ It uses Strike's API wallets, which can trade but cannot withdraw. Even a misbeh
 | `what_if` | "What happens if ADA drops 20%?" Re-prices your positions, spot holdings outside Strike and (optionally) ADA-denominated margin. Shows PnL, equity, the maintenance-margin buffer, whether the daily loss limit would trip, and how well your spot is hedged. Read-only. |
 | `hedge_exposure` | "I hold 3,000 ADA, keep me hedged." Moves the perp position to −spot × ratio and trades only the difference. |
 | `place_order` | Market and limit orders. Defaults to preview (`dry_run=true`). New risk then waits for your approval. |
-| `get_order_status` | Outcome of an order that was waiting for you: pending, executed, rejected, expired, or blocked on approval |
+| `get_order_status` | Outcome of a request that was waiting for you: pending, executed, rejected, expired, or blocked on approval (orders); pending, applied, rejected or expired (guardrail changes) |
 | `close_position` | Reduce-only close. Always allowed. If the book is too thin for 0.5% slippage it retries once at `close_max_slippage`, then tells you plainly instead of looping. |
 | `cancel_open_orders` | Cancels open orders on all markets or on one market |
+| `propose_guardrail_change` | Change a limit. **Tightening applies at once; loosening waits for your click in the dashboard.** "Lower my daily loss limit to $100" takes effect now; "raise it to $500" becomes an approval card. |
 | `engage_kill_switch` | Blocks all new risk immediately. The agent can turn it on but not off. |
 | `get_guardrails`, `get_action_log` | The policy, and an audit log of every preview, block and order together with the agent's stated reason |
 
 ## Guardrails
 
-`guardrails.json` is re-read on every order, so edits take effect immediately.
+`guardrails.json` is re-read on every order, so edits take effect immediately. You can edit it by hand, or let the agent change it with `propose_guardrail_change` (see the design rules).
 
 ```json
 {
@@ -96,6 +97,11 @@ Design rules:
   - `auto_approve_below_usd` lets small orders through without a click if you want that convenience.
   - Closing and reducing positions never wait.
 - **Fallback when approval mode is off:** orders above `confirm_above_usd` need a single-use, order-bound confirmation token that expires after 5 minutes, and the agent must get your yes in the chat first.
+- **The agent can tighten limits, never loosen them.** `propose_guardrail_change` applies a stricter value at once (lower caps or leverage, a lower loss limit, fewer markets, approval switched on). Anything looser becomes an approval card in the dashboard, like an order. A proposal that mixes both applies the tighter part and queues the rest.
+  - Switching the daily loss limit off (`0`) or allowing every market (`[]`) counts as loosening.
+  - Changes to `close_max_slippage` and `allowed_order_types` always wait for you, in either direction, because a "stricter" value there could stop you from closing a position in a thin market.
+  - The kill switch is not part of it: the agent can only engage it, and only you can release it.
+  - The server instructions tell the agent to propose loosening only when you ask for it, never as a way around a blocked order.
 - **No workarounds.** The server instructions tell the agent never to split or resize an order to get past a limit. Per-position and total-exposure caps also make splitting pointless.
 - **Everything is logged** to `.strike-agent/journal.jsonl`.
 
@@ -107,9 +113,9 @@ The dashboard runs inside the MCP server process and is served on `http://127.0.
 - positions and the active guardrails
 - the funding board
 - a live feed of everything the agent did, with its stated reasons
-- **approval cards** for orders waiting for you, with Approve and Reject buttons, the agent's reason, and a countdown to expiry. The browser tab title shows the number of waiting orders.
+- **approval cards** for orders and looser limits waiting for you, with Approve and Reject buttons, the agent's reason, and a countdown to expiry. The browser tab title shows the number of waiting requests.
 
-It is the only place orders can be **approved** and the only place the kill switch can be **released**. There are no MCP tools for either. Requests without the dashboard's custom header are refused, so other websites open in your browser can't flip the switch.
+It is the only place orders and looser limits can be **approved** and the only place the kill switch can be **released**. There are no MCP tools for either. Requests without the dashboard's custom header are refused, so other websites open in your browser can't flip the switch.
 
 Run `python scripts/dashboard_preview.py` to see it on a mock account with sample activity.
 
@@ -189,7 +195,7 @@ strike_agent_kit/
   service.py      Order pipeline, funding board, hedging, kill switch
   journal.py      Audit log, day-start equity, confirmation tokens
   mock.py         In-memory Strike + Hyperliquid for tests and demos
-  server.py       MCP server (12 tools, annotated read-only vs trading)
+  server.py       MCP server (13 tools, plus simulate_price_move in mock mode)
   dashboard.py    Local control panel (stdlib HTTP, single page)
 scripts/
   demo_walkthrough.py   Demo rehearsal over MCP stdio
@@ -208,5 +214,6 @@ tests/                  Signing, client (signature-verifying fake server), guard
 
 ## Limits
 
-- Daily PnL is measured as the change in equity since the first reading of the UTC day, so deposits and withdrawals distort it.
+- Daily PnL is the change in equity since the first reading of the UTC day, minus deposits and withdrawals. A wallet change while positions stay the same is treated as a deposit or withdrawal, so funding paid in that window is left out too.
+- If your margin is held in ADA (or another volatile asset), set `STRIKE_COLLATERAL_ASSET=ADA`. Price moves on the collateral then count toward daily PnL and the loss limit, and only changes in the amount held count as deposits or withdrawals. The kit assumes the whole wallet is held in that asset.
 - Mock prices are illustrative, not live.

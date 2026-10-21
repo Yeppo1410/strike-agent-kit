@@ -75,6 +75,81 @@ class Policy:
         return {k: (float(v) if isinstance(v, D) else v) for k, v in asdict(self).items()}
 
 
+# ---- changing the policy from the agent side ---------------------------------
+# The agent may tighten a limit on its own. Anything that loosens a limit, or that could stop
+# the human from getting out of a position, waits for a human in the dashboard.
+LOWER_IS_TIGHTER = ("max_leverage", "max_order_notional_usd", "max_position_notional_usd",
+                    "max_total_notional_usd", "max_slippage", "confirm_above_usd", "auto_approve_below_usd")
+# Closing uses market orders and close_max_slippage. Even a "tighter" value there can trap the
+# human in a thin market, so these always go to the human.
+HUMAN_ONLY = ("allowed_order_types", "close_max_slippage")
+CHANGEABLE = LOWER_IS_TIGHTER + ("daily_loss_limit_usd", "require_human_approval", "allowed_markets") + HUMAN_ONLY
+LABELS = {
+    "max_leverage": "Max leverage", "max_order_notional_usd": "Max per order",
+    "max_position_notional_usd": "Max per market", "max_total_notional_usd": "Max total exposure",
+    "max_slippage": "Max slippage", "close_max_slippage": "Close slippage",
+    "confirm_above_usd": "Confirm in chat above", "auto_approve_below_usd": "Auto-approve below",
+    "daily_loss_limit_usd": "Daily loss limit", "require_human_approval": "Human approval",
+    "allowed_markets": "Allowed markets", "allowed_order_types": "Allowed order types",
+}
+
+
+def parse_change(name: str, value: Any) -> Any:
+    """Validate one proposed value and return it in policy-file form. Raises ValueError."""
+    if name == "kill_switch":
+        raise ValueError("Use engage_kill_switch to turn the kill switch on. Only a human can turn it off.")
+    if name not in CHANGEABLE:
+        raise ValueError(f"Unknown guardrail {name!r}. Changeable: {', '.join(CHANGEABLE)}.")
+    if name == "require_human_approval":
+        if not isinstance(value, bool):
+            raise ValueError("require_human_approval must be true or false.")
+        return value
+    if name in ("allowed_markets", "allowed_order_types"):
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(f"{name} must be a list of strings.")
+        if name == "allowed_markets":
+            return sorted({(v.strip().upper() if "-" in v else f"{v.strip().upper()}-USD") for v in value})
+        types = sorted({v.strip().lower() for v in value})
+        if not types or not set(types) <= {"market", "limit"}:
+            raise ValueError("allowed_order_types must be a non-empty subset of market, limit.")
+        return types
+    try:
+        num = D(str(value))
+    except Exception:
+        raise ValueError(f"{name} must be a number.") from None
+    if not num.is_finite() or num < 0:
+        raise ValueError(f"{name} must be zero or more.")
+    if name == "max_leverage":
+        if num != num.to_integral_value() or num < 1:
+            raise ValueError("max_leverage must be a whole number of at least 1.")
+        return int(num)
+    if name in ("max_slippage", "close_max_slippage") and not (D(0) < num <= D("0.2")):
+        raise ValueError(f"{name} is a fraction between 0 and 0.2 (0.01 = 1%).")
+    if name in ("max_order_notional_usd", "max_position_notional_usd", "max_total_notional_usd") and num == 0:
+        raise ValueError(f"{name} must be above zero. Use engage_kill_switch to stop all new risk.")
+    return float(num)
+
+
+def classify_change(name: str, old: Any, new: Any) -> str:
+    """'same', 'tighten' (the agent may apply it) or 'loosen' (a human must approve it)."""
+    if name == "allowed_markets":
+        old_set, new_set = set(old), set(new)  # empty list = every market
+        if new_set == old_set:
+            return "same"
+        return "tighten" if new_set and (not old_set or new_set < old_set) else "loosen"
+    if name in HUMAN_ONLY:
+        same = sorted(old) == sorted(new) if isinstance(new, list) else D(str(old)) == D(str(new))
+        return "same" if same else "loosen"
+    if name == "require_human_approval":
+        return "same" if bool(old) == new else ("tighten" if new else "loosen")
+    old_d, new_d = D(str(old)), D(str(new))
+    if old_d == new_d:
+        return "same"
+    if name == "daily_loss_limit_usd":  # 0 switches the limit off
+        return "tighten" if new_d > 0 and (old_d == 0 or new_d < old_d) else "loosen"
+    return "tighten" if new_d < old_d else "loosen"
+
+
 class PolicyStore:
     def __init__(self, path: Path):
         self.path = path
@@ -92,6 +167,13 @@ class PolicyStore:
 
     def engage_kill_switch(self) -> None:
         self.set_kill_switch(True)
+
+    def update(self, changes: dict[str, Any]) -> None:
+        """Write already-validated values (see parse_change) into the policy file."""
+        data = json.loads(self.path.read_text()) if self.path.is_file() else dict(DEFAULT_POLICY)
+        data.update(changes)
+        Policy.from_dict(data)  # fail before writing if the result is not a valid policy
+        self.path.write_text(json.dumps(data, indent=2) + "\n")
 
 
 @dataclass

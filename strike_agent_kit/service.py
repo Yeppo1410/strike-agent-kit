@@ -14,7 +14,7 @@ from typing import Any
 
 from .client import StrikeAPIError, StrikeBackend
 from .config import Settings
-from .guardrails import AccountState, OrderIntent, PolicyStore, evaluate
+from .guardrails import LABELS, AccountState, OrderIntent, PolicyStore, classify_change, evaluate, parse_change
 from .journal import Journal
 
 STRIKE_TAKER_FEE = D("0.0005")
@@ -256,8 +256,50 @@ class AgentService:
 
     def get_guardrails(self) -> dict[str, Any]:
         return {"policy": self.policies.load().to_dict(), "policy_file": str(self.settings.guardrails_path),
-                "note": "Edit the policy file to change limits. The agent can engage the kill switch, "
+                "note": "Use propose_guardrail_change to change a limit: tightening applies at once, loosening "
+                        "waits for the human in the dashboard. The agent can engage the kill switch, "
                         "but only a human can release it."}
+
+    def propose_guardrail_change(self, changes: dict[str, Any], reason: str | None = None) -> dict[str, Any]:
+        """Tightening applies immediately. Loosening (or anything that could block an exit) waits for a human."""
+        if not isinstance(changes, dict) or not changes:
+            return {"status": "invalid", "error": "Pass changes as {guardrail: new value}, e.g. {\"max_leverage\": 3}."}
+        policy = self.policies.load().to_dict()
+        parsed, errors = {}, []
+        for name, value in changes.items():
+            try:
+                parsed[name] = parse_change(name, value)
+            except ValueError as e:
+                errors.append(str(e))
+        if errors:
+            self.journal.log("guardrail_change_invalid", requested=changes, error=" ".join(errors), reason=reason)
+            return {"status": "invalid", "error": " ".join(errors), "message": "Nothing was changed."}
+
+        tighten, loosen = {}, {}
+        for name, new in parsed.items():
+            kind = classify_change(name, policy[name], new)
+            if kind != "same":
+                (tighten if kind == "tighten" else loosen)[name] = {"label": LABELS[name], "from": policy[name], "to": new}
+        if not tighten and not loosen:
+            return {"status": "unchanged", "message": "Those values are already in force."}
+
+        out: dict[str, Any] = {}
+        if tighten:
+            self.policies.update({k: v["to"] for k, v in tighten.items()})
+            self.journal.log("guardrails_tightened", changes=tighten, reason=reason)
+            out["applied"] = tighten
+        if loosen:
+            approval_id = self.journal.add_approval({"kind": "guardrail_change", "changes": loosen, "reason": reason})
+            self.journal.log("guardrail_change_pending", approval_id=approval_id, changes=loosen, reason=reason)
+            out.update(approval_id=approval_id, pending=loosen)
+        out["status"] = "pending_approval" if loosen and not tighten else (
+            "partially_applied" if loosen else "applied")
+        out["message"] = " ".join(m for m in (
+            "Tighter limits are in force now." if tighten else "",
+            "Loosening a limit waits for the user to approve it in their dashboard; you cannot approve it. Tell them, "
+            "and check the outcome with get_order_status. Do not resubmit or route around the current limit."
+            if loosen else "") if m)
+        return out
 
     def get_funding_board(self, symbols: list[str] | None = None) -> dict[str, Any]:
         markets = self.backend.get_markets()
@@ -545,7 +587,8 @@ class AgentService:
         a = self.journal.get_approval(approval_id)
         if a is None:
             return {"status": "unknown", "error": f"No approval request {approval_id}."}
-        out = {"approval_id": approval_id, "status": a["status"], "order": a["order"]}
+        out = {"approval_id": approval_id, "status": a["status"]}
+        out.update({"changes": a["changes"]} if a.get("kind") == "guardrail_change" else {"order": a["order"]})
         if a.get("result"):
             out["result"] = a["result"]
         return out
@@ -557,6 +600,17 @@ class AgentService:
             return {"status": "unknown", "error": f"No approval request {approval_id}."}
         if a["status"] != "pending":
             return {"status": a["status"], "error": f"Request is already {a['status']}."}
+        if a.get("kind") == "guardrail_change":
+            if not approve:
+                self.journal.update_approval(approval_id, status="rejected", decided=time.time())
+                self.journal.log("guardrail_change_rejected", approval_id=approval_id, changes=a["changes"],
+                                 reason=a.get("reason"))
+                return {"status": "rejected"}
+            self.policies.update({k: v["to"] for k, v in a["changes"].items()})
+            self.journal.update_approval(approval_id, status="applied", decided=time.time())
+            self.journal.log("guardrails_changed_by_human", approval_id=approval_id, changes=a["changes"],
+                             reason=a.get("reason"))
+            return {"status": "applied", "changes": a["changes"]}
         if not approve:
             self.journal.update_approval(approval_id, status="rejected", decided=time.time())
             self.journal.log("order_rejected_by_human", approval_id=approval_id, order=a["order"], reason=a.get("reason"))

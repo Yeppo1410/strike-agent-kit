@@ -232,7 +232,20 @@ const EVENTS = {
   order_needs_confirmation: ["needs ok", "c-warn"], order_pending_approval: ["awaiting you", "c-warn"],
   order_rejected_by_human: ["you rejected", "c-n"], order_invalid: ["invalid", "c-n"], order_error: ["error", "c-bad"],
   kill_switch_engaged: ["kill switch on", "c-bad"], kill_switch_released: ["kill switch off", "c-ok"], cancel_all: ["cancel all", "c-n"],
+  guardrails_tightened: ["limit tightened", "c-ok"], guardrail_change_pending: ["awaiting you", "c-warn"],
+  guardrails_changed_by_human: ["limit changed", "c-warn"], guardrail_change_rejected: ["you rejected", "c-n"],
+  guardrail_change_invalid: ["invalid", "c-n"],
 };
+
+function fmtRule(k, v){
+  if (Array.isArray(v)) return v.length ? v.map(m => String(m).replace("-USD","")).join(", ") : "all";
+  if (typeof v === "boolean") return v ? "on" : "off";
+  if (k.endsWith("slippage")) return (v*100).toFixed(2) + "%";
+  if (k === "max_leverage") return v + "x";
+  if (k === "daily_loss_limit_usd" && v === 0) return "off";
+  return usd(v);
+}
+const changeText = c => Object.entries(c || {}).map(([k, x]) => `${x.label} ${fmtRule(k, x.from)} → ${fmtRule(k, x.to)}`).join(" · ");
 
 function describe(e){
   const o = e.order || {};
@@ -242,7 +255,8 @@ function describe(e){
     if (e.event === "order_submitted") t += ` · ${e.exchange_status}` + (e.avg_price ? ` @ ${e.avg_price}` : "");
     return t;
   }
-  if (e.event === "order_invalid") return e.error;
+  if (e.changes) return changeText(e.changes);
+  if (e.event === "order_invalid" || e.event === "guardrail_change_invalid") return e.error;
   if (e.event === "cancel_all") return "Cancel open orders" + (e.symbol ? " on " + e.symbol : "");
   return "";
 }
@@ -283,7 +297,14 @@ async function state(){
 
   const pending = (s.approvals || []).filter(a => a.status === "pending");
   $("approvals").innerHTML = pending.map(a => {
-    const o = a.order, mins = Math.max(0, Math.round((a.expires - s.ts) / 60));
+    const mins = Math.max(0, Math.round((a.expires - s.ts) / 60));
+    if (a.kind === "guardrail_change") return `<div class="ap"><div>
+      <div class="tag">Agent wants to loosen a limit · waiting for you · expires in ${mins} min</div>
+      ${Object.entries(a.changes).map(([k, x]) => `<h3>${esc(x.label)}: ${esc(fmtRule(k, x.from))} → ${esc(fmtRule(k, x.to))}</h3>`).join("")}
+      ${a.reason ? `<div class="why">Agent's reason: “${esc(a.reason)}”</div>` : ""}
+    </div><div class="btns"><button class="no" data-id="${a.id}" data-act="reject">Reject</button>
+      <button class="ok" data-id="${a.id}" data-act="approve">Approve</button></div></div>`;
+    const o = a.order;
     return `<div class="ap"><div>
       <div class="tag">Agent wants to trade · waiting for you · expires in ${mins} min</div>
       <h3>${o.side === "buy" ? "Buy" : "Sell"} ${esc(o.size)} ${esc(o.symbol.replace("-USD",""))} · ${usd(a.notional_usd)}</h3>
@@ -293,15 +314,16 @@ async function state(){
     </div><div class="btns"><button class="no" data-id="${a.id}" data-act="reject">Reject</button>
       <button class="ok" data-id="${a.id}" data-act="approve">Approve</button></div></div>`;
   }).join("");
-  document.title = pending.length ? `(${pending.length}) Approve trade · Strike Agent Kit` : "Strike Agent Kit";
+  document.title = pending.length ? `(${pending.length}) Approve · Strike Agent Kit` : "Strike Agent Kit";
 
   const apStatus = Object.fromEntries((s.approvals || []).map(a => [a.id, a.status]));
   const RESOLVED = {executed: ["you approved", "c-ok"], rejected: ["you rejected", "c-n"], expired: ["expired", "c-n"],
-                    blocked_on_approval: ["approved, then blocked", "c-bad"], failed: ["approved, failed", "c-bad"]};
+                    blocked_on_approval: ["approved, then blocked", "c-bad"], failed: ["approved, failed", "c-bad"],
+                    applied: ["you approved", "c-ok"]};
   const log = s.log.slice().reverse();
   $("feed").innerHTML = log.length ? log.map(e => {
     let [label, cls] = EVENTS[e.event] || [e.event, "c-n"];
-    if (e.event === "order_pending_approval" && RESOLVED[apStatus[e.approval_id]]) [label, cls] = RESOLVED[apStatus[e.approval_id]];
+    if ((e.event === "order_pending_approval" || e.event === "guardrail_change_pending") && RESOLVED[apStatus[e.approval_id]]) [label, cls] = RESOLVED[apStatus[e.approval_id]];
     const viol = (e.decision?.violations || e.guardrails?.violations || []).map(v => v.message).join(" ");
     const time = new Date(e.ts).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
     return `<div class="ev"><span class="chip ${cls}">${label}</span><span class="t">${esc(describe(e))} <span class="mono" style="color:var(--muted);font-size:11px">${time}</span></span>

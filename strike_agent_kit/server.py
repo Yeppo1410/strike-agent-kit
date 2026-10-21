@@ -34,6 +34,9 @@ Rules you must follow:
 - If a tool returns status "blocked", tell the user which guardrail was hit. Never split, resize or
   reroute an order to get around a guardrail.
 - If a tool returns "needs_confirmation", ask the user, then resend with the confirmation_token.
+- To change a limit, use propose_guardrail_change. Tightening applies at once; loosening waits for the
+  user's approval in the dashboard. Only propose loosening when the user explicitly asks to change that
+  limit, never as a way around a blocked order. Offer to tighten limits when losses or risk pile up.
 - Closing or reducing positions is always allowed. If something looks wrong (losses piling up,
   unexpected positions, API errors), stop trading and offer to engage the kill switch.
 - Always pass a short `reason` describing why you are placing the order; it goes into the audit log.
@@ -140,6 +143,22 @@ def cancel_open_orders(symbol: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=SAFE_WRITE)
+def propose_guardrail_change(changes: dict[str, Any], reason: str) -> dict[str, Any]:
+    """Change risk limits. Tightening applies immediately; loosening waits for the user in the dashboard.
+
+    changes: {guardrail: new value}, e.g. {"daily_loss_limit_usd": 100, "max_leverage": 2}. Changeable:
+    max_leverage, max_order_notional_usd, max_position_notional_usd, max_total_notional_usd,
+    daily_loss_limit_usd (0 = off), max_slippage, close_max_slippage, confirm_above_usd,
+    auto_approve_below_usd, require_human_approval, allowed_markets ([] = all), allowed_order_types.
+    The kill switch is not changed here (use engage_kill_switch). Changes to close_max_slippage and
+    allowed_order_types always wait for the user, because they affect closing positions.
+    Only propose loosening when the user explicitly asks; never to get around a blocked order.
+    """
+    with service.lock:
+        return service.propose_guardrail_change(changes, reason)
+
+
+@mcp.tool(annotations=SAFE_WRITE)
 def engage_kill_switch(reason: str) -> dict[str, Any]:
     """Block all new risk immediately. Closing positions keeps working. Only a human can switch it off."""
     with service.lock:
@@ -155,8 +174,9 @@ def get_action_log(limit: int = 20) -> list[dict[str, Any]]:
 
 @mcp.tool(annotations=READ)
 def get_order_status(approval_id: str) -> dict[str, Any]:
-    """Outcome of an order that was waiting for the user's approval: pending, executed (with fill),
-    rejected, expired, or blocked_on_approval (guardrails changed before the user approved)."""
+    """Outcome of a request that was waiting for the user's approval. Orders: pending, executed (with fill),
+    rejected, expired, or blocked_on_approval (guardrails changed before the user approved).
+    Guardrail changes: pending, applied, rejected or expired."""
     with service.lock:
         return service.get_order_status(approval_id)
 

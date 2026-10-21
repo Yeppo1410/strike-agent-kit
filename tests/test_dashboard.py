@@ -70,3 +70,24 @@ def test_approve_and_reject_via_dashboard(svc):  # noqa: F811
         assert [p["symbol"] for p in svc.backend.get_positions()] == ["ADA-USD"]
     finally:
         httpd.shutdown()
+
+
+def test_guardrail_change_approved_via_dashboard(svc):  # noqa: F811
+    base, httpd = _start(svc)
+    try:
+        req = svc.propose_guardrail_change({"daily_loss_limit_usd": 400}, reason="user asked for more room")
+        state = json.load(urllib.request.urlopen(base + "/api/state"))
+        card = next(a for a in state["approvals"] if a["id"] == req["approval_id"])
+        assert card["kind"] == "guardrail_change" and card["changes"]["daily_loss_limit_usd"]["from"] == 250
+        try:  # without the dashboard header, nothing happens
+            _post(base + f"/api/approvals/{req['approval_id']}", {"action": "approve"}, header=False)
+            raise AssertionError("expected 403")
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+        assert svc.policies.load().daily_loss_limit_usd == 250
+        assert _post(base + f"/api/approvals/{req['approval_id']}", {"action": "approve"})["status"] == "applied"
+        assert svc.policies.load().daily_loss_limit_usd == 400
+        page = urllib.request.urlopen(base + "/").read().decode()
+        assert "Agent wants to loosen a limit" in page
+    finally:
+        httpd.shutdown()
