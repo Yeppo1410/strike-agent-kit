@@ -12,7 +12,7 @@ from .service import AgentService
 def build_service(settings: Settings | None = None) -> AgentService:
     settings = settings or Settings.from_env()
     if settings.is_mock:
-        backend = MockStrike()
+        backend = MockStrike(collateral_asset=settings.collateral_asset)
         feed = MockHyperliquid() if settings.use_hyperliquid else None
         poll = 0.0
     else:

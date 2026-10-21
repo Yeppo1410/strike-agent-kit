@@ -48,9 +48,11 @@ MOCK_HYPERLIQUID_FUNDING = {  # hourly rates
 
 
 class MockStrike:
-    def __init__(self, wallet_balance: str = "10000"):
+    def __init__(self, wallet_balance: str = "10000", collateral_asset: str | None = None):
         self.markets = {m["symbol"]: dict(m) for m in DEFAULT_MARKETS}
         self.wallet = D(wallet_balance)
+        # Margin held in a volatile asset (e.g. "ADA"): the USD wallet moves with that market's price.
+        self.collateral_symbol = f"{collateral_asset.upper()}-USD" if collateral_asset else None
         self.positions: dict[str, dict[str, Any]] = {}  # symbol -> {size, entry, leverage}
         self.leverage: dict[str, int] = {}
         self.orders: dict[str, dict[str, Any]] = {}  # client_order_id -> order
@@ -65,6 +67,8 @@ class MockStrike:
         new = D(m["mark_price"]) * (1 + D(str(pct)) / 100)
         for k in ("mark_price", "index_price", "last_price", "bid1_price", "ask1_price"):
             m[k] = str(new)
+        if symbol == self.collateral_symbol:
+            self.wallet *= 1 + D(str(pct)) / 100
 
     def _mark(self, symbol: str) -> D:
         return D(self.markets[symbol]["mark_price"])

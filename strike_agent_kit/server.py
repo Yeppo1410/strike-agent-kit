@@ -161,6 +161,23 @@ def get_order_status(approval_id: str) -> dict[str, Any]:
         return service.get_order_status(approval_id)
 
 
+if service.settings.is_mock:
+    @mcp.tool(annotations=SAFE_WRITE)
+    def simulate_price_move(asset: str, pct: float) -> dict[str, Any]:
+        """MOCK MODE ONLY: move a market's price by pct (e.g. asset="ADA", pct=-25) to rehearse a market move.
+        If the margin is held in that asset (STRIKE_COLLATERAL_ASSET), the wallet is re-priced too.
+        Only call this when the user asks to simulate a move; it never exists on testnet or mainnet."""
+        with service.lock:
+            sym = service.normalize_symbol(asset)
+            before = service.backend.get_markets()[sym]["mark_price"]
+            service.backend.move_price(sym, pct)
+            after = service.backend.get_markets()[sym]["mark_price"]
+            service.journal.log("simulated_price_move", symbol=sym, pct=pct, mark_before=before, mark_after=after)
+            return {"symbol": sym, "pct": pct, "mark_before": before, "mark_after": after,
+                    "collateral_repriced": sym == service.backend.collateral_symbol,
+                    "note": "Simulated move in mock mode. Call get_account to see the effect."}
+
+
 def main() -> None:
     from .dashboard import start_dashboard_thread
     start_dashboard_thread(service)  # local-only web view; disable with STRIKE_DASHBOARD_PORT=0

@@ -43,7 +43,9 @@ async def main() -> None:
     (work / "guardrails.json").write_text((ROOT / "guardrails.json").read_text())
     env = {**os.environ, "STRIKE_MODE": os.environ.get("STRIKE_MODE", "mock"),
            "STRIKE_GUARDRAILS": str(work / "guardrails.json"), "STRIKE_DATA_DIR": str(work / "data"),
-           "STRIKE_ENV_FILE": str(work / ".env"), "PYTHONPATH": str(ROOT), "STRIKE_DASHBOARD_PORT": port}
+           "STRIKE_ENV_FILE": str(work / ".env"), "PYTHONPATH": str(ROOT), "STRIKE_DASHBOARD_PORT": port,
+           "STRIKE_COLLATERAL_ASSET": os.environ.get("STRIKE_COLLATERAL_ASSET", "ADA")}  # margin held in ADA
+    mock = env["STRIKE_MODE"] == "mock"
 
     def human_clicks(approval_id: str, action: str) -> None:
         """Stands in for you clicking Approve/Reject in the dashboard."""
@@ -80,6 +82,16 @@ async def main() -> None:
             show("5. Agent tries to go big: 10x leverage, $4,000 SOL short", await s.call_tool(
                 "place_order", {"symbol": "SOL", "side": "sell", "notional_usd": 4000, "leverage": 10,
                                 "dry_run": False, "reason": "capture SOL funding spread"}))
+
+            if mock:  # a real 25% drop can't be ordered up on testnet/mainnet
+                show("5b. What if ADA drops 25%? (3,000 ADA spot, margin in ADA)", await s.call_tool(
+                    "what_if", {"moves": {"ADA": -25}, "spot": {"ADA": 3000}}))
+                show("5c. Market moves: ADA -25% (simulated)", await s.call_tool(
+                    "simulate_price_move", {"asset": "ADA", "pct": -25}))
+                show("5d. Collateral loss shows up in today's PnL", await s.call_tool("get_account", {}))
+                show("5e. Daily loss limit blocks new risk", await s.call_tool(
+                    "place_order", {"symbol": "ETH", "side": "buy", "notional_usd": 200, "dry_run": False,
+                                    "reason": "buy the dip"}))
 
             show("6. Engage kill switch", await s.call_tool(
                 "engage_kill_switch", {"reason": "demo: user wants to stop new risk"}))

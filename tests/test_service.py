@@ -223,6 +223,14 @@ def test_what_if_warns_when_collateral_is_not_tracked(svc):
     assert any("STRIKE_COLLATERAL_ASSET" in w for w in res["warnings"])
 
 
+def test_mock_reprices_wallet_when_margin_is_in_that_asset():
+    m = MockStrike(wallet_balance="1000", collateral_asset="ada")
+    m.move_price("SOL-USD", -50)
+    assert m.wallet == D("1000")
+    m.move_price("ADA-USD", -20)
+    assert m.wallet == D("800")
+
+
 def test_close_retries_with_wider_slippage_on_thin_book(svc):
     svc.place_order("SOL", "buy", notional_usd=100, dry_run=False)
     svc.backend.book_gap["SOL-USD"] = D("0.02")  # book 2% from mark: 0.5% close fails, 3% works
