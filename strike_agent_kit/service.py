@@ -26,6 +26,10 @@ class OrderRejected(Exception):
     pass
 
 
+def _slippage_rejected(res: dict[str, Any]) -> bool:
+    return res.get("status") == "rejected" and "slippage" in str(res.get("close_reason") or "")
+
+
 def _f(x: D, places: int = 6) -> float:
     return float(round(x, places))
 
@@ -344,14 +348,40 @@ class AgentService:
                 return last
             time.sleep(0.4)
 
-    def close_position(self, symbol: str, dry_run: bool = False, reason: str | None = None) -> dict[str, Any]:
+    def close_position(self, symbol: str, dry_run: bool = False, reason: str | None = None,
+                       slippage: float | str | None = None) -> dict[str, Any]:
+        """Reduce-only market close. If the exchange rejects it for slippage, retry once at the
+        policy's close_max_slippage; if that also fails, say plainly that the market is too thin."""
         symbol = self.normalize_symbol(symbol)
         pos = next((p for p in self.backend.get_positions() if p["symbol"] == symbol), None)
         if not pos or D(pos["size"]) == 0:
             return {"status": "noop", "message": f"No open position on {symbol}."}
         size = D(pos["size"])
-        return self.place_order(symbol, "sell" if size > 0 else "buy", size=str(abs(size)),
-                                reduce_only=True, dry_run=dry_run, reason=reason or "close_position")
+        policy = self.policies.load()
+        cap = max(policy.max_slippage, policy.close_max_slippage)
+        first = D(str(slippage)) if slippage is not None else min(D("0.005"), policy.max_slippage)
+        if first > cap:
+            return {"status": "invalid", "error": f"Slippage {first} is above the close limit {cap} "
+                                                  "(close_max_slippage in the guardrails file)."}
+
+        def attempt(slip: D) -> dict[str, Any]:
+            return self.place_order(symbol, "sell" if size > 0 else "buy", size=str(abs(size)),
+                                    reduce_only=True, slippage=str(slip), dry_run=dry_run,
+                                    reason=reason or "close_position")
+
+        res = attempt(first)
+        if dry_run or not _slippage_rejected(res):
+            return res
+        if first < cap:
+            self.journal.log("close_retry", symbol=symbol, first_slippage=first, retry_slippage=cap)
+            res = attempt(cap)
+            res["retried_with_slippage"] = str(cap)
+            if not _slippage_rejected(res):
+                return res
+        res["message"] = (f"Could not close {symbol}: no liquidity within {cap * 100:.2f}% of the mark price. "
+                          "The position is still open. Tell the user; they can close it manually on Strike "
+                          "or raise close_max_slippage in the guardrails file. Do not keep retrying.")
+        return res
 
     def hedge_exposure(self, asset: str, spot_amount: float | str, hedge_ratio: float | str = 1.0,
                        dry_run: bool = False, confirmation_token: str | None = None,

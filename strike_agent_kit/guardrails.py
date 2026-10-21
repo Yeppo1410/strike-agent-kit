@@ -26,6 +26,7 @@ DEFAULT_POLICY: dict[str, Any] = {
     "max_total_notional_usd": 10000,
     "daily_loss_limit_usd": 250,
     "max_slippage": 0.01,
+    "close_max_slippage": 0.03,
     "confirm_above_usd": 1000,
     "require_human_approval": True,
     "auto_approve_below_usd": 0,
@@ -43,6 +44,9 @@ class Policy:
     max_total_notional_usd: D = D("10000")
     daily_loss_limit_usd: D = D("250")
     max_slippage: D = D("0.01")
+    # Closing reduces risk, so it may accept a wider price band than new orders. Used when a close at
+    # normal slippage is rejected because the book is thin or moving fast.
+    close_max_slippage: D = D("0.03")
     confirm_above_usd: D = D("1000")
     # New risk waits in a queue until a human approves it in the dashboard (the agent cannot).
     require_human_approval: bool = True
@@ -61,6 +65,7 @@ class Policy:
             max_total_notional_usd=D(str(merged["max_total_notional_usd"])),
             daily_loss_limit_usd=D(str(merged["daily_loss_limit_usd"])),
             max_slippage=D(str(merged["max_slippage"])),
+            close_max_slippage=D(str(merged["close_max_slippage"])),
             confirm_above_usd=D(str(merged["confirm_above_usd"])),
             require_human_approval=bool(merged["require_human_approval"]),
             auto_approve_below_usd=D(str(merged["auto_approve_below_usd"])),
@@ -195,8 +200,9 @@ def evaluate(policy: Policy, intent: OrderIntent, state: AccountState) -> Decisi
 
     if intent.order_type not in policy.allowed_order_types:
         v.append(Violation("allowed_order_types", f"Order type {intent.order_type!r} is not allowed."))
-    if intent.slippage is not None and intent.slippage > policy.max_slippage:
-        v.append(Violation("max_slippage", f"Slippage {intent.slippage} exceeds the {policy.max_slippage} limit."))
+    slip_cap = max(policy.max_slippage, policy.close_max_slippage) if intent.reduce_only else policy.max_slippage
+    if intent.slippage is not None and intent.slippage > slip_cap:
+        v.append(Violation("max_slippage", f"Slippage {intent.slippage} exceeds the {slip_cap} limit."))
     if delta == 0:
         v.append(Violation("no_effect", "This order would not change the position."))
 

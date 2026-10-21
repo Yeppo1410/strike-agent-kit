@@ -78,6 +78,7 @@ It uses Strike's API wallets, which can trade but cannot withdraw. Even a misbeh
   "max_total_notional_usd": 10000,
   "daily_loss_limit_usd": 250,
   "max_slippage": 0.01,
+  "close_max_slippage": 0.03,
   "confirm_above_usd": 1000,
   "require_human_approval": true,
   "auto_approve_below_usd": 0

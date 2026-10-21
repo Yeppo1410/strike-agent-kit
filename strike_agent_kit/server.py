@@ -94,10 +94,15 @@ def place_order(symbol: str, side: str, size: float | None = None, notional_usd:
 
 
 @mcp.tool(annotations=SAFE_WRITE)
-def close_position(symbol: str, dry_run: bool = False, reason: str | None = None) -> dict[str, Any]:
-    """Close the whole position on a market with a reduce-only market order. Always allowed, even with the kill switch on."""
+def close_position(symbol: str, dry_run: bool = False, reason: str | None = None,
+                   slippage: float | None = None) -> dict[str, Any]:
+    """Close the whole position on a market with a reduce-only market order. Always allowed, even with the kill switch on.
+
+    slippage: optional fraction (default 0.5%). If Strike rejects the close for slippage, it is retried once
+    at the policy's close_max_slippage. If that fails too, the market is too thin: tell the user, don't retry.
+    """
     with service.lock:
-        return service.close_position(symbol, dry_run, reason)
+        return service.close_position(symbol, dry_run, reason, slippage)
 
 
 @mcp.tool(annotations=TRADE)

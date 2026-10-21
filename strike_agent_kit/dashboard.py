@@ -278,7 +278,7 @@ async function state(){
     ["Max per market", usd(g.max_position_notional_usd)], ["Max total exposure", usd(g.max_total_notional_usd)],
     ["Daily loss limit", usd(g.daily_loss_limit_usd)],
     ["Your approval", g.require_human_approval ? (g.auto_approve_below_usd > 0 ? "above " + usd(g.auto_approve_below_usd) : "every new trade") : "off (ask in chat above " + usd(g.confirm_above_usd) + ")"],
-    ["Max slippage", (g.max_slippage*100).toFixed(2) + "%"], ["Markets", g.allowed_markets.length ? g.allowed_markets.map(m => m.replace("-USD","")).join(", ") : "all"],
+    ["Max slippage", (g.max_slippage*100).toFixed(2) + "%"], ["Close slippage", (g.close_max_slippage*100).toFixed(2) + "%"], ["Markets", g.allowed_markets.length ? g.allowed_markets.map(m => m.replace("-USD","")).join(", ") : "all"],
   ].map(([k,v]) => `<span>${k}</span><span class="mono">${esc(v)}</span>`).join("");
 
   const pending = (s.approvals || []).filter(a => a.status === "pending");

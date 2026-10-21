@@ -14,6 +14,7 @@
   "max_total_notional_usd": 300,
   "daily_loss_limit_usd": 15,
   "max_slippage": 0.005,
+  "close_max_slippage": 0.02,
   "confirm_above_usd": 50,
   "require_human_approval": true,
   "auto_approve_below_usd": 0

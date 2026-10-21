@@ -153,6 +153,36 @@ def test_losses_still_count_after_a_deposit(svc):
     assert svc.place_order("ADA", "sell", notional_usd=100, dry_run=False)["status"] == "blocked"
 
 
+def test_close_retries_with_wider_slippage_on_thin_book(svc):
+    svc.place_order("SOL", "buy", notional_usd=100, dry_run=False)
+    svc.backend.book_gap["SOL-USD"] = D("0.02")  # book 2% from mark: 0.5% close fails, 3% works
+    res = svc.close_position("SOL")
+    assert res["status"] == "submitted" and res["retried_with_slippage"] == "0.03"
+    assert svc.backend.get_positions() == []
+
+
+def test_close_reports_clearly_when_market_too_thin(svc):
+    svc.place_order("SOL", "buy", notional_usd=100, dry_run=False)
+    svc.backend.book_gap["SOL-USD"] = D("0.25")  # like testnet SOL on 21 Oct
+    res = svc.close_position("SOL")
+    assert res["status"] == "rejected" and "too thin" not in res.get("error", "")
+    assert "no liquidity within 3.00%" in res["message"]
+    assert len(svc.backend.get_positions()) == 1
+
+
+def test_close_works_with_kill_switch_and_explicit_slippage(svc):
+    svc.place_order("SOL", "buy", notional_usd=100, dry_run=False)
+    svc.engage_kill_switch("test")
+    svc.backend.book_gap["SOL-USD"] = D("0.015")
+    assert svc.close_position("SOL", slippage=0.02)["status"] == "submitted"
+    assert svc.close_position("SOL", slippage=0.5)["status"] in ("invalid", "noop")
+
+
+def test_wide_slippage_only_allowed_for_closes(svc):
+    res = svc.place_order("SOL", "buy", notional_usd=100, slippage=0.03, dry_run=True)
+    assert res["status"] == "blocked"
+
+
 def test_invalid_inputs(svc):
     assert svc.place_order("ADA", "sell", dry_run=True)["status"] == "invalid"
     assert svc.place_order("XYZ", "sell", size=1, dry_run=True)["status"] == "invalid"

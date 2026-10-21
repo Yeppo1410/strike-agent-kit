@@ -57,6 +57,7 @@ class MockStrike:
         self._ids = itertools.count(1000)
         self.account_id = "mock-0000-0000-0000-000000000001"
         self.builder_fees_paid = D(0)
+        self.book_gap: dict[str, D] = {}  # symbol -> fraction the book sits away from mark (thin-book tests)
 
     # ---- test helpers ----------------------------------------------------
     def move_price(self, symbol: str, pct: float) -> None:
@@ -143,6 +144,11 @@ class MockStrike:
                                   or (side == "sell" and D(str(order["price"])) <= mark)))
         if not marketable:
             record["Status"] = "open"
+            return {"client_order_id": coid, "symbol": symbol, "status": "pending"}
+
+        gap = self.book_gap.get(symbol, D(0))
+        if otype == "market" and gap > D(str(order.get("slippage") or "0.005")):
+            record["Status"], record["CloseReason"] = "canceled", "market_order_exceeded_slippage"
             return {"client_order_id": coid, "symbol": symbol, "status": "pending"}
 
         signed = size if side == "buy" else -size
