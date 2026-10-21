@@ -124,6 +124,35 @@ def test_daily_loss_limit_trips_after_losses(svc):
     assert svc.close_position("ADA")["status"] == "submitted"
 
 
+def test_deposit_is_not_counted_as_profit(svc):
+    svc.place_order("SOL", "buy", notional_usd=100, dry_run=False)
+    svc.get_account()  # records day-start equity
+    svc.backend.wallet += D("912")  # deposit, positions unchanged
+    acct = svc.get_account()
+    assert abs(acct["day_pnl_usd"]) < 1
+    assert acct["day_external_flows_usd"] == 912
+
+
+def test_withdrawal_does_not_trip_loss_limit(svc):
+    svc.get_account()
+    svc.backend.wallet -= D("5000")  # withdrawal, no positions
+    acct = svc.get_account()
+    assert abs(acct["day_pnl_usd"]) < 1
+    assert svc.place_order("ADA", "sell", notional_usd=100, dry_run=False)["status"] != "blocked"
+
+
+def test_losses_still_count_after_a_deposit(svc):
+    token = svc.place_order("ADA", "sell", notional_usd=2000, dry_run=True)["confirmation_token"]
+    svc.place_order("ADA", "sell", notional_usd=2000, dry_run=False, confirmation_token=token)
+    svc.get_account()
+    svc.backend.wallet += D("1000")  # deposit must not cushion the loss limit
+    svc.get_account()
+    svc.backend.move_price("ADA-USD", 15)  # short loses ~300 USD
+    acct = svc.get_account()
+    assert acct["day_pnl_usd"] < -250
+    assert svc.place_order("ADA", "sell", notional_usd=100, dry_run=False)["status"] == "blocked"
+
+
 def test_invalid_inputs(svc):
     assert svc.place_order("ADA", "sell", dry_run=True)["status"] == "invalid"
     assert svc.place_order("XYZ", "sell", size=1, dry_run=True)["status"] == "invalid"

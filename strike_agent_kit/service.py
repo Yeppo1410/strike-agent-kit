@@ -73,10 +73,11 @@ class AgentService:
         positions = self.backend.get_positions()
         markets = self.backend.get_markets()
         equity = D(account["wallet_balance"]) + D(account.get("unrealized_pnl") or "0")
+        sizes = {p["symbol"]: D(p["size"]) for p in positions}
         state = AccountState(
-            positions={p["symbol"]: D(p["size"]) for p in positions},
+            positions=sizes,
             marks={s: D(m["mark_price"]) for s, m in markets.items()},
-            day_pnl_usd=self.journal.day_pnl(equity),
+            day_pnl_usd=self.journal.day_pnl(equity, D(account["wallet_balance"]), sizes),
             current_leverage={p["symbol"]: int(p["leverage"]) for p in positions if p.get("leverage")},
         )
         return state, account, equity
@@ -123,6 +124,7 @@ class AgentService:
             "available_usd": _f(D(account.get("available_balance") or "0"), 2),
             "unrealized_pnl_usd": _f(D(account.get("unrealized_pnl") or "0"), 2),
             "day_pnl_usd": _f(state.day_pnl_usd, 2),
+            "day_external_flows_usd": _f(self.journal.day_flows(), 2),
             "daily_loss_limit_usd": _f(policy.daily_loss_limit_usd, 2),
             "kill_switch": policy.kill_switch,
             "positions": positions,

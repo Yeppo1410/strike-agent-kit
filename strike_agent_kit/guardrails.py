@@ -105,7 +105,7 @@ class OrderIntent:
 class AccountState:
     positions: dict[str, D]  # symbol -> signed size
     marks: dict[str, D]  # symbol -> mark price
-    day_pnl_usd: D  # equity change since start of UTC day
+    day_pnl_usd: D  # trading PnL since start of UTC day, excluding deposits/withdrawals
     current_leverage: dict[str, int] = field(default_factory=dict)
 
 

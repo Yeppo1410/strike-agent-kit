@@ -45,14 +45,33 @@ class Journal:
     def _write_state(self, state: dict[str, Any]) -> None:
         self.state_path.write_text(json.dumps(state, indent=2, default=_default))
 
-    def day_pnl(self, equity: D) -> D:
-        """Equity change since the first reading of the current UTC day."""
+    def day_pnl(self, equity: D, wallet: D | None = None, positions: dict[str, D] | None = None) -> D:
+        """Trading PnL since the first reading of the current UTC day.
+
+        Plain equity change would count deposits, withdrawals and collateral revaluation
+        (e.g. margin held in ADA) as profit or loss. So when the wallet balance moves while
+        the open positions are unchanged since the previous reading, that move is booked as
+        an external flow and left out. Wallet changes that coincide with a position change
+        (realized PnL, fees) still count. Funding paid on unchanged positions is small and
+        is excluded along with the flows.
+        """
         today = datetime.now(timezone.utc).date().isoformat()
         state = self._read_state()
+        pos = {k: str(v) for k, v in (positions or {}).items() if D(v) != 0}
         if state.get("day") != today:
-            state["day"], state["day_start_equity"] = today, str(equity)
-            self._write_state(state)
-        return equity - D(state["day_start_equity"])
+            state.update(day=today, day_start_equity=str(equity), day_flows="0")
+        elif wallet is not None and "last_wallet" in state and state.get("last_positions") == pos:
+            delta = wallet - D(state["last_wallet"])
+            if delta != 0:
+                state["day_flows"] = str(D(state.get("day_flows", "0")) + delta)
+        if wallet is not None:
+            state["last_wallet"], state["last_positions"] = str(wallet), pos
+        self._write_state(state)
+        return equity - D(state["day_start_equity"]) - D(state.get("day_flows", "0"))
+
+    def day_flows(self) -> D:
+        """External wallet changes (deposits, withdrawals, collateral moves) excluded from today's PnL."""
+        return D(self._read_state().get("day_flows", "0"))
 
     def issue_token(self, key: str, ttl_s: int = 300) -> str:
         import hashlib
