@@ -1,0 +1,20 @@
+{
+  "kill_switch": false,
+  "allowed_markets": [
+    "BTC-USD",
+    "ADA-USD"
+  ],
+  "allowed_order_types": [
+    "market",
+    "limit"
+  ],
+  "max_leverage": 3,
+  "max_order_notional_usd": 150,
+  "max_position_notional_usd": 200,
+  "max_total_notional_usd": 300,
+  "daily_loss_limit_usd": 15,
+  "max_slippage": 0.005,
+  "confirm_above_usd": 50,
+  "require_human_approval": true,
+  "auto_approve_below_usd": 0
+}

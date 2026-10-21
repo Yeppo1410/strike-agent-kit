@@ -1,0 +1,14 @@
+.env
+.strike-agent/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
