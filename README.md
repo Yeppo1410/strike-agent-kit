@@ -188,13 +188,9 @@ Mainnet is locked unless you also set `STRIKE_ALLOW_MAINNET=1`. For a small main
 
 ## Builder codes
 
-The kit was designed for distribution through Builder Connect:
+The kit is self-hosted: every user runs it locally with their own API wallet, and no third party holds keys or places trades for them.
 
-- A user signs one message with their Ethereum, Solana or Cardano wallet.
-- That approves the builder code and registers an API wallet for the agent.
-- Every order the agent places carries `X-Builder-Fee-Bps`. Set it with `STRIKE_BUILDER_FEE_BPS`.
-
-Every agent-placed trade therefore earns builder revenue. That creates an incentive to ship good agents with tight guardrails.
+It is also ready for distribution through Strike's Builder Connect. A wallet, exchange front-end or agent platform that ships the kit can set `STRIKE_BUILDER_FEE_BPS`, and every order then carries `X-Builder-Fee-Bps`. Agent-placed trades earn builder revenue for whoever distributes the kit, which rewards shipping agents with tight guardrails.
 
 ## Project layout
 
