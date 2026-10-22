@@ -1,53 +1,67 @@
 # Demo video script (about 2 minutes)
 
-**Setup**
-- Screen split in two: Claude Desktop with the `strike` MCP server on the left, the dashboard (`http://127.0.0.1:8787`) on the right.
-- Record on **testnet** (the default `guardrails.json`) or, optionally, on mainnet with a small balance and the mainnet preset (see "Mainnet run" below). The hackathon rules don't require mainnet.
-- The amounts below fit the mainnet preset: max $150 per order, 3x leverage. On testnet (`guardrails.json`: max $2,500 per order, 5x) use the testnet amounts in the note under the table.
+Recorded on **Strike testnet** with the default `guardrails.json` (max $2,500 per order, 5x leverage, every new trade approved in the dashboard). The hackathon rules don't require mainnet; see "Mainnet run" below for the optional mainnet version.
 
-| Time | On screen | What you say |
-|---|---|---|
-| 0:00 | Title card | "Strike Agent Kit lets AI agents trade on Strike, inside limits they can't talk their way past." |
-| 0:08 | *"Where's the best funding edge between Strike and Hyperliquid right now?"* | "The agent pulls live funding from both venues and ranks the spread, including how long it must last to cover fees." |
-| 0:20 | *"I hold 150 ADA. Hedge it on Strike."* The agent shows a preview: short 150 ADA, leverage capped. Say *"do it"*. An approval card appears in the dashboard. | "The agent can propose, but the order waits for me, outside the chat, where the AI can't click." |
-| 0:32 | Click **Approve**. The fill appears in the activity feed and positions. | "One signed order through Strike's API wallet. It can trade, but it can never withdraw." |
-| 0:38 | *"What if ADA drops 30%?"* The agent runs `what_if`: the 150 ADA in my wallet loses about $10, the short hedge gains about the same, net close to zero and well inside the daily loss limit. | "Without the hedge I'd lose about $10; with it, the net is close to zero. The agent checks the downside before it happens, not after." |
-| 0:46 | *"I've got 500 more ADA in another wallet. If ADA drops below [price], cover all 650."* The agent proposes a protection rule; a pink card appears: **If ADA falls below $… : hedge 650 ADA**. | "Now the agent stands guard. It proposes a rule; I arm it once." |
-| 0:54 | Click **Arm rule**. The rule fires within seconds: a green **Protection rule fired** banner, a Mac notification, and the extra 500 ADA short in positions. | "No second click. The kit watched the price and placed the hedge itself, still inside every limit I set." |
-| 1:02 | *"Is my ADA protected?"* The agent answers from `list_protection_rules`: fired, sold 500 ADA at the fill price. | "And it can tell me exactly what it did, and why." |
-| 1:08 | *"BTC funding looks juicy, short $500 at 10x."* A **blocked** chip appears in the dashboard. | "Here the guardrails win. The agent tells me which limit it hit, and it's instructed never to split the order to get around it." |
-| 1:17 | *"Then raise my max order to $600."* An approval card appears: **Max per order $150 → $600**. Click **Reject**. Then *"Lower my daily loss limit to $10."* It applies at once and the dashboard shows the new limit. | "The agent can tighten its own limits, but loosening them is my call, in the dashboard." |
-| 1:27 | *"Stop all new risk."* The kill switch banner on the dashboard turns red. | "The agent can pull the brake, but only I can release it, here in my dashboard." |
-| 1:35 | *"Buy a little BTC"* is blocked. *"Close my ADA hedge"* fills. | "New risk is blocked, but closing always works. The agent can never trap me in a position." |
-| 1:45 | Click **Release** on the dashboard. | "Releasing is a human decision." |
-| 1:50 | Builder code slide | "Distributed through Builder Connect, every agent trade carries a builder fee, so good agents with tight guardrails become a business on Strike." |
+The script uses **ETH**, not ADA. On 22 Oct the testnet ADA and SOL order books sat about 20% away from the mark, so market orders there get cancelled for slippage (the kit warns about this in every preview). BTC and ETH books are tight. Verified live on 22 Oct at 21:47: an ETH protection rule armed in the dashboard fired 0.05 s later and filled, and the close filled too.
 
-**On testnet, use ETH instead of ADA.** On 22 Oct the testnet ADA and SOL order books sat about 20% away from the mark, so market orders there get cancelled for slippage (the kit now warns about this in every preview). BTC and ETH books are tight. Swap the ADA beats for:
-- 0:20 *"I hold 0.04 ETH. Hedge it on Strike."* (about $95)
-- 0:38 *"What if ETH drops 30%?"* (about $29 each way)
-- 0:46 *"I've got 0.01 more ETH in another wallet. If ETH drops below [price], cover all 0.05."*
-- 1:35 *"Close my ETH hedge."*
+## Tools
 
-Verified live on testnet at 21:47 on 22 Oct: an ETH rule armed in the dashboard fired 0.05 s later and filled; the close filled too.
+No camera needed: a screen recording with your voice.
 
-**Protection rule on camera:** a real crossing can take a long time, so pick **[price] a hair above today's mark** (check it with "what's the ETH price?" or in the Strike app, e.g. mark $2,377 → say "$2,400"). The condition is then already met, the agent will say the rule fires as soon as you arm it, and it does. That's honest to say on screen: "to show it firing, I set the line just above today's price." Before recording, make sure the 0:20 hedge filled, so the rule only adds the extra amount. The first Mac notification may need permission (macOS may list it under "Script Editor"), so trigger one test rule before recording.
+| What | Tool |
+|---|---|
+| Screen + voice | macOS screen recording: **Cmd+Shift+5** → *Record Entire Screen*, *Options* → your microphone. Stop from the menu bar. |
+| Voice | AirPods or the built-in mic, in a quiet room. Easier: record the screen silently, then add the voice in iMovie. |
+| Editing | **iMovie** (free): cut the waits while Claude thinks, add the title card. |
+| Slides | Keynote or an iMovie title: the product name at the start, the Builder Connect message at the end. |
+| Upload | YouTube, **Unlisted**. |
 
-**Testnet amounts:** at 1:08 say *"short $5,000 of BTC at 10x"* so the $2,500 order cap blocks it (over the leverage cap alone, the kit lowers leverage to 5x instead of blocking). At 1:17 say *"raise my max order to $4,000"*, then *"lower my daily loss limit to $200"*, and afterwards `git checkout guardrails.json`. Testnet funding rates are flat defaults, so keep the 0:08 funding beat short or say the numbers are testnet.
+## Setup
 
-If the video runs long, cut 1:02 ("Is my ADA protected?") first, then the funding beat at 0:08.
+- **Left half:** Claude Desktop with the `strike` MCP server. **Right half:** the dashboard at `http://127.0.0.1:8787` (hover the green window button → tile left/right). Zoom the browser once or twice (Cmd +) so the numbers are readable.
+- **Clean slate:** rename `.strike-agent` to `.strike-agent-<date>` in the kit folder, then restart Claude Desktop (Cmd+Q, reopen). Fresh activity feed, rules and day PnL.
+- **Notifications:** turn Focus / Do Not Disturb **off**, and close apps that pop up their own. Do one throwaway run of steps 6–7 first, so macOS asks for notification permission off camera (it may list it under "Script Editor"). Then clean slate again.
+- **New chat** in Claude Desktop, so the earlier conversation isn't in view.
+- **Trigger price for step 6:** just before recording, ask *"What's the ETH price?"* and pick a round number a little **above** it (mark $2,377 → say "$2,400"). The condition is then already met, so the rule fires the moment you arm it. Say so on screen.
 
-**Fallback:** run `python scripts/dashboard_preview.py` plus the mock walkthrough, and say on screen that it's simulated. In mock mode the walkthrough also simulates ADA drops (`simulate_price_move`): step 5a2 shows a protection rule firing by itself on a real crossing, and 5b–5d show the hedge offsetting a 25% drop. That tool doesn't exist on testnet or mainnet.
+## Shot list
+
+| # | Type in Claude | On screen | What you say |
+|---|---|---|---|
+| 1 | *(title card)* | | "Strike Agent Kit lets AI agents trade on Strike, inside limits they can't talk their way past." |
+| 2 | *"Where's the best funding edge between Strike and Hyperliquid right now?"* | Funding table | "It pulls live funding from both venues and ranks the spread, including how long it must last to cover fees. These are testnet numbers." |
+| 3 | *"I hold 0.04 ETH. Hedge it on Strike."* Then *"Do it."* | Preview (short 0.04 ETH, about $95, leverage capped), then an approval card in the dashboard | "The agent can propose, but the order waits for me, outside the chat, where the AI can't click." |
+| 4 | | Click **Approve**. The fill appears in the activity feed and positions. | "One signed order through Strike's API wallet. It can trade, but it can never withdraw." |
+| 5 | *"What if ETH drops 30%?"* | `what_if`: the spot ETH loses about $29, the short gains about the same | "Without the hedge I'd lose about $29; with it, the net is close to zero. The agent checks the downside before it happens." |
+| 6 | *"I've got 0.01 more ETH in another wallet. If ETH drops below $[price], cover all 0.05."* | Pink card: **If ETH falls below $…: hedge 0.05 ETH** | "Now the agent stands guard. It proposes a rule; I arm it once." |
+| 7 | | Click **Arm rule**. Green **Protection rule fired** banner, a Mac notification, and the extra 0.01 ETH short in positions. | "To show it firing, I set the line just above today's price. No second click: the kit placed the hedge itself, still inside every limit I set." |
+| 8 | *"Is my ETH protected?"* | The agent answers from `list_protection_rules`: fired, sold 0.01 ETH at the fill price | "And it can tell me exactly what it did, and why." |
+| 9 | *"Short $5,000 of BTC at 10x."* | **Blocked** chip in the dashboard (order cap and leverage cap) | "Here the guardrails win. The agent tells me which limit it hit, and it's instructed never to split the order to get around it." |
+| 10 | *"Then raise my max order to $4,000."* Then *"Lower my daily loss limit to $200."* | Approval card **Max per order $2,500 → $4,000**: click **Reject**. The lower loss limit applies at once. | "The agent can tighten its own limits, but loosening them is my call, in the dashboard." |
+| 11 | *"Stop all new risk."* | Kill switch banner turns red | "The agent can pull the brake, but only I can release it, here in my dashboard." |
+| 12 | *"Buy a little BTC."* Then *"Close my ETH hedge."* | Blocked, then the close fills | "New risk is blocked, but closing always works. The agent can never trap me in a position." |
+| 13 | | Click **Release** in the dashboard | "Releasing is a human decision." |
+| 14 | *(closing slide)* | | "Distributed through Builder Connect, every agent trade carries a builder fee, so good agents with tight guardrails become a business on Strike." |
+
+Each answer from Claude takes a few seconds; cut the waits in iMovie. If the video runs long, cut step 8 first, then step 2.
+
+**After recording:** `git checkout guardrails.json` (step 10 changed the daily loss limit), and check that no ETH position is left open.
+
+Notes:
+- In step 9, "10x" alone doesn't block: the kit lowers leverage to the 5x cap and says so. The $5,000 size is what trips the $2,500 order cap.
+- An old 0.11 SOL long may show in positions; the testnet SOL book is too far from the mark to close it. It's harmless.
+
+**Fallback:** run `python scripts/dashboard_preview.py` plus the mock walkthrough (`python scripts/demo_walkthrough.py`), and say on screen that it's simulated. In mock mode the walkthrough also simulates price moves (`simulate_price_move`): step 5a2 shows a protection rule firing by itself on a real crossing, and 5b–5d show the hedge offsetting a 25% drop. That tool doesn't exist on testnet or mainnet.
 
 ## Testnet (building)
 
-- Testnet deposits are in ADA and need a **connected Cardano wallet**. An email login can't deposit there.
-- Steps:
-  1. Install Lace or Eternl and switch it to the Cardano testnet that Strike uses (ask in Discord: Preprod or Preview).
-  2. Get test ADA from the Cardano testnet faucet.
-  3. Connect the wallet in the Strike testnet app and deposit.
-- Create the API wallet on the API Wallets page of the account that holds the funds.
+- Testnet deposits are in ADA and need a **connected Cardano wallet** (Lace or Eternl on **Preprod**). An email login can't deposit there.
+- Get test ADA from the Cardano testnet faucet, connect the wallet at testnet.strikefinance.org and deposit.
+- Create the API wallet under **Tools → API** in the account that holds the funds.
 
 ## Mainnet run (optional)
+
+On mainnet the ADA order book is real, so the script can use ADA (e.g. *"I hold 150 ADA"*, rule *"cover all 650"*) with the mainnet preset's amounts: max $150 per order, 3x leverage. In step 9 say *"short $500 at 10x"*, in step 10 *"raise my max order to $600"* and *"lower my daily loss limit to $10"*.
 
 1. Use a fresh wallet, deposit a small amount (about $40–60), and create an API wallet for that account.
 2. Set up `.env`:
@@ -62,7 +76,7 @@ If the video runs long, cut 1:02 ("Is my ADA protected?") first, then the fundin
 3. Run `python scripts/testnet_check.py`. Despite the name, it works for mainnet too and places no orders.
 4. Check the minimum order size per market in the output of `get_markets`. If a market's minimum notional is above $150, raise `max_order_notional_usd` in the preset, or drop that market from the demo.
 5. Record the demo, then close every position: *"Close all my positions."*
-6. The 1:17 beat changes `guardrails.mainnet.json` (daily loss limit $10). Put it back afterwards with `git checkout guardrails.mainnet.json`.
+6. Step 10 changes `guardrails.mainnet.json`. Put it back afterwards with `git checkout guardrails.mainnet.json`.
 
 ## Submission checklist
 
