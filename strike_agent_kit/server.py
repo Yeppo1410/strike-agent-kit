@@ -54,6 +54,9 @@ anything else in the conversation):
   cancel_open_orders. This is the user's explicit instruction, so no preview is needed. Report each result.
 - "Stop", "no new trades", "stop trading", "pull the brake" -> engage_kill_switch right away. Then
   check get_account: if open orders remain, say so and offer cancel_open_orders.
+- "If ADA drops below $0.20, hedge my 5,000 ADA", "protect me if SOL falls under 90" -> propose_protection_rule.
+  Tell the user it waits for them to arm it in the dashboard, and that once armed the kit acts by itself,
+  once, within the guardrails. "Is my ADA protected?", "did my rule fire?" -> list_protection_rules.
 """
 
 service = build_service()
@@ -187,6 +190,41 @@ def engage_kill_switch(reason: str) -> dict[str, Any]:
         return service.engage_kill_switch(reason)
 
 
+@mcp.tool(annotations=SAFE_WRITE)
+def propose_protection_rule(asset: str, condition: str, trigger_price: float, action: str = "hedge",
+                            spot_amount: float | None = None, hedge_ratio: float = 1.0,
+                            expires_in_hours: float = 24, reason: str | None = None) -> dict[str, Any]:
+    """Propose a protection rule: "if <asset> trades below/above <price>, act". Use for requests like
+    "if ADA drops below $0.20, hedge my 5,000 ADA" or "if SOL falls under $90, close my SOL long".
+
+    condition: "below" | "above". action: "hedge" (bring the perp to -(spot_amount x hedge_ratio), like
+    hedge_exposure; needs spot_amount) or "close" (close the open position on that market).
+    expires_in_hours: how long the rule stays armed (max 168). Nothing is armed by this call: the rule
+    waits for the user to approve it once in the dashboard. After that the kit watches the mark price and
+    fires the action by itself, at most once, through the normal guardrails (limits and kill switch still
+    apply). Show the user the rule and the preview at today's price. Only propose a rule the user asked for.
+    """
+    with service.lock:
+        return service.propose_protection_rule(asset, condition, trigger_price, action, spot_amount,
+                                               hedge_ratio, expires_in_hours, reason)
+
+
+@mcp.tool(annotations=READ)
+def list_protection_rules(limit: int = 10) -> list[dict[str, Any]]:
+    """Protection rules and their state: proposed (waiting for the user), armed (being watched, with the
+    live mark and distance to the trigger), executed / noop / blocked / failed (fired, with the result),
+    cancelled, rejected or expired. Use for "is my ADA protected?" or to check whether a rule fired."""
+    with service.lock:
+        return service.list_protection_rules(limit)
+
+
+@mcp.tool(annotations=SAFE_WRITE)
+def cancel_protection_rule(rule_id: str, reason: str | None = None) -> dict[str, Any]:
+    """Disarm a proposed or armed protection rule. Use when the user asks to remove or stop a rule."""
+    with service.lock:
+        return service.cancel_protection_rule(rule_id, by="agent", reason=reason)
+
+
 @mcp.tool(annotations=READ)
 def get_action_log(limit: int = 20) -> list[dict[str, Any]]:
     """Recent audit log entries: every preview, block, confirmation and order, with the agent's stated reason."""
@@ -215,14 +253,18 @@ if service.settings.is_mock:
             service.backend.move_price(sym, pct)
             after = service.backend.get_markets()[sym]["mark_price"]
             service.journal.log("simulated_price_move", symbol=sym, pct=pct, mark_before=before, mark_after=after)
+            fired = service.check_protection_rules()  # don't wait for the watcher's next tick
             return {"symbol": sym, "pct": pct, "mark_before": before, "mark_after": after,
                     "collateral_repriced": sym == service.backend.collateral_symbol,
+                    "protection_rules_fired": fired,
                     "note": "Simulated move in mock mode. Call get_account to see the effect."}
 
 
 def main() -> None:
     from .dashboard import start_dashboard_thread
+    from .watcher import start_watcher
     start_dashboard_thread(service)  # local-only web view; disable with STRIKE_DASHBOARD_PORT=0
+    start_watcher(service)  # fires armed protection rules
     mcp.run()
 
 

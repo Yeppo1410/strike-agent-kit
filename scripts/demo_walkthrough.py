@@ -44,7 +44,8 @@ async def main() -> None:
     env = {**os.environ, "STRIKE_MODE": os.environ.get("STRIKE_MODE", "mock"),
            "STRIKE_GUARDRAILS": str(work / "guardrails.json"), "STRIKE_DATA_DIR": str(work / "data"),
            "STRIKE_ENV_FILE": str(work / ".env"), "PYTHONPATH": str(ROOT), "STRIKE_DASHBOARD_PORT": port,
-           "STRIKE_COLLATERAL_ASSET": os.environ.get("STRIKE_COLLATERAL_ASSET", "ADA")}  # margin held in ADA
+           # USD margin by default, like Strike; set STRIKE_COLLATERAL_ASSET=ADA to rehearse ADA-held margin.
+           "STRIKE_COLLATERAL_ASSET": os.environ.get("STRIKE_COLLATERAL_ASSET", "")}
     mock = env["STRIKE_MODE"] == "mock"
 
     def human_clicks(approval_id: str, action: str) -> None:
@@ -83,15 +84,24 @@ async def main() -> None:
                 "place_order", {"symbol": "SOL", "side": "sell", "notional_usd": 4000, "leverage": 10,
                                 "dry_run": False, "reason": "capture SOL funding spread"}))
 
+            rule = show("5a. 'If ADA drops below $0.65, cover all 5,000 of my ADA' -> rule waits for the human",
+                        await s.call_tool("propose_protection_rule", {
+                            "asset": "ADA", "condition": "below", "trigger_price": 0.65, "spot_amount": 5000,
+                            "reason": "user holds 5,000 ADA and wants full cover below $0.65"}))
+            human_clicks(rule["approval_id"], "approve")
+            if mock:
+                show("5a2. Market moves: ADA -10% (simulated) -> the rule fires by itself", await s.call_tool(
+                    "simulate_price_move", {"asset": "ADA", "pct": -10}))
+            show("5a3. Rules", await s.call_tool("list_protection_rules", {}))
+            if not mock:  # don't leave a live rule armed after a rehearsal
+                show("5a4. Cancel the rule", await s.call_tool("cancel_protection_rule", {"rule_id": rule["rule_id"]}))
+
             if mock:  # a real 25% drop can't be ordered up on testnet/mainnet
-                show("5b. What if ADA drops 25%? (3,000 ADA spot, margin in ADA)", await s.call_tool(
-                    "what_if", {"moves": {"ADA": -25}, "spot": {"ADA": 3000}}))
+                show("5b. What if ADA drops another 25%? (5,000 ADA spot, now fully hedged)", await s.call_tool(
+                    "what_if", {"moves": {"ADA": -25}, "spot": {"ADA": 5000}}))
                 show("5c. Market moves: ADA -25% (simulated)", await s.call_tool(
                     "simulate_price_move", {"asset": "ADA", "pct": -25}))
-                show("5d. Collateral loss shows up in today's PnL", await s.call_tool("get_account", {}))
-                show("5e. Daily loss limit blocks new risk", await s.call_tool(
-                    "place_order", {"symbol": "ETH", "side": "buy", "notional_usd": 200, "dry_run": False,
-                                    "reason": "buy the dip"}))
+                show("5d. The short gains what the spot loses", await s.call_tool("get_account", {}))
 
             loosen = show("5f. Agent asks to raise the max order size -> waits for the human", await s.call_tool(
                 "propose_guardrail_change", {"changes": {"max_order_notional_usd": 6000},

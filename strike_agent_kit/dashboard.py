@@ -49,6 +49,7 @@ def _make_handler(service: AgentService):
                     with service.lock:
                         data = {"account": service.get_account(), "guardrails": service.get_guardrails()["policy"],
                                 "log": service.get_action_log(40), "approvals": service.list_approvals(50),
+                                "rules": service.list_protection_rules(8), "watcher_error": service.watcher_error,
                                 "ts": time.time()}
                     return self._json(200, data)
                 if self.path == "/api/funding":
@@ -79,6 +80,11 @@ def _make_handler(service: AgentService):
                         return self._json(400, {"error": "action must be approve or reject"})
                     with service.lock:
                         return self._json(200, service.decide_approval_by_human(approval_id, action == "approve"))
+                if self.path.startswith("/api/rules/") and self.path.endswith("/cancel"):
+                    rule_id = self.path.split("/")[3]
+                    with service.lock:
+                        return self._json(200, service.cancel_protection_rule(rule_id, by="human",
+                                                                              reason="cancelled in the dashboard"))
                 self._json(404, {"error": "not found"})
             except Exception as e:  # noqa: BLE001
                 self._json(400, {"error": str(e)})
@@ -178,8 +184,30 @@ td.r,th.r{text-align:right}
 .ap .btns{display:flex;gap:8px}
 .ap .ok{background:var(--ok);color:#fff}.ap .no{background:transparent;color:var(--ink);border:1px solid var(--line)}
 .ap .tag{margin-bottom:6px;display:block;font:500 11px "IBM Plex Mono",monospace;color:var(--warn);text-transform:uppercase;letter-spacing:.06em}
+.ap.rule{border-color:var(--accent);background:var(--panel);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+.ap.rule .tag{color:var(--accent)}
+.fired{display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;padding:18px 20px;border-radius:16px;
+  margin-bottom:14px;border:2px solid var(--ok);background:var(--ok-bg);animation:pop .5s ease-out}
+.fired.bad{border-color:var(--bad);background:var(--bad-bg)}
+.fired .shield{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:var(--ok);color:#fff;font-size:24px}
+.fired.bad .shield{background:var(--bad)}
+.fired h3{margin:0;font-size:19px;letter-spacing:-.01em}
+.fired .meta{color:var(--muted);font-size:13px;margin-top:4px}
+.fired .no{background:transparent;color:var(--ink);border:1px solid var(--line)}
+@keyframes pop{0%{transform:scale(.97);opacity:0}60%{transform:scale(1.01);opacity:1}100%{transform:scale(1)}}
+.rl{display:grid;grid-template-columns:auto 1fr auto;gap:6px 14px;align-items:center;padding:12px;border-radius:10px;background:var(--bg)}
+.rl + .rl{margin-top:8px}
+.rl .t{font-weight:600;font-size:14px}
+.rl .m{grid-column:2;color:var(--muted);font-size:12px}
+.rl .bar{grid-column:2;margin-top:2px}
+.rl button{grid-row:1/span 3;grid-column:3;background:transparent;color:var(--ink);border:1px solid var(--line);padding:7px 12px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-right:6px;animation:pulse 1.6s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 60%,transparent)}100%{box-shadow:0 0 0 8px transparent}}
+@media (prefers-reduced-motion:reduce){.dot,.fired{animation:none}}
 @media (max-width:860px){.stat{grid-column:span 6}.half,.wide,.side{grid-column:span 12}}
-@media (max-width:480px){.stat{grid-column:span 12}.ap{grid-template-columns:1fr}}
+@media (max-width:480px){.stat{grid-column:span 12}.ap,.fired{grid-template-columns:1fr}
+  .rl{grid-template-columns:1fr auto}.rl .chip{grid-column:1;justify-self:start}
+  .rl .t,.rl .m,.rl .bar{grid-column:1}.rl button{grid-column:2;grid-row:1/span 4}}
 </style>
 </head>
 <body>
@@ -194,6 +222,7 @@ td.r,th.r{text-align:right}
     </div>
   </header>
 
+  <div id="fired"></div>
   <div class="approvals" id="approvals"></div>
 
   <div class="grid">
@@ -209,6 +238,8 @@ td.r,th.r{text-align:right}
       <tbody id="positions"></tbody></table></div></div>
 
     <div class="card side"><h2>Guardrails</h2><div class="rules" id="rules"></div></div>
+
+    <div class="card full"><h2>Protection rules</h2><div id="prules"></div><div class="sub" id="watchErr"></div></div>
 
     <div class="card half"><h2>Agent activity</h2><div class="feed" id="feed"></div></div>
 
@@ -235,7 +266,25 @@ const EVENTS = {
   guardrails_tightened: ["limit tightened", "c-ok"], guardrail_change_pending: ["awaiting you", "c-warn"],
   guardrails_changed_by_human: ["limit changed", "c-warn"], guardrail_change_rejected: ["you rejected", "c-n"],
   guardrail_change_invalid: ["invalid", "c-n"],
+  protection_rule_proposed: ["awaiting you", "c-warn"], protection_rule_armed: ["rule armed", "c-ok"],
+  protection_rule_triggered: ["rule triggered", "c-warn"], protection_rule_executed: ["rule fired", "c-ok"],
+  protection_rule_noop: ["rule fired", "c-n"], protection_rule_blocked: ["rule blocked", "c-bad"],
+  protection_rule_failed: ["rule failed", "c-bad"], protection_rule_cancelled: ["rule cancelled", "c-n"],
+  protection_rule_rejected: ["you rejected", "c-n"], protection_rule_invalid: ["invalid", "c-n"],
+  close_retry: ["close retry", "c-warn"], simulated_price_move: ["simulated move", "c-n"],
 };
+const price = v => { const n = +v; if (n >= 1000) return "$" + n.toLocaleString("en-US", {maximumFractionDigits: 2});
+  const t = n.toPrecision(5); return "$" + (t.includes(".") ? t.replace(/0+$/, "").replace(/\.$/, "") : t); };
+const ago = t => { const s = Math.max(0, Math.round(Date.now()/1000 - t)); return s < 60 ? s + " s ago" : Math.round(s/60) + " min ago"; };
+const left = (t, now) => { const m = Math.max(0, Math.round((t - now) / 60)); return m >= 120 ? Math.round(m/60) + " h" : m + " min"; };
+let dismissed = new Set();
+try { dismissed = new Set(JSON.parse(localStorage.getItem("ska-dismissed") || "[]")); } catch (e) {}
+function resultText(res){
+  if (!res) return "";
+  if (res.order) return `${res.order.side === "buy" ? "Bought" : "Sold"} ${res.order.size} ${res.order.symbol.replace("-USD","")}`
+    + (res.order.reduce_only ? " (reduce-only)" : "") + (res.avg_price ? ` @ ${res.avg_price}` : "") + (res.exchange_status ? ` · ${res.exchange_status}` : "");
+  return res.error || res.message || (res.violations || []).join(" ") || "";
+}
 
 function fmtRule(k, v){
   if (Array.isArray(v)) return v.length ? v.map(m => String(m).replace("-USD","")).join(", ") : "all";
@@ -256,6 +305,9 @@ function describe(e){
     return t;
   }
   if (e.changes) return changeText(e.changes);
+  if (e.rule) return e.rule + (e.mark ? ` · mark ${e.mark}` : "") + (e.result ? " · " + resultText(e.result) : "")
+    + (e.event === "protection_rule_cancelled" && e.by ? ` · by ${e.by === "human" ? "you" : "agent"}` : "");
+  if (e.event === "simulated_price_move") return `${e.symbol.replace("-USD","")} ${e.pct > 0 ? "+" : ""}${e.pct}% · ${e.mark_before} → ${(+e.mark_after).toPrecision(5)}`;
   if (e.event === "order_invalid" || e.event === "guardrail_change_invalid") return e.error;
   if (e.event === "cancel_all") return "Cancel open orders" + (e.symbol ? " on " + e.symbol : "");
   return "";
@@ -295,9 +347,23 @@ async function state(){
     ["Max slippage", (g.max_slippage*100).toFixed(2) + "%"], ["Close slippage", (g.close_max_slippage*100).toFixed(2) + "%"], ["Markets", g.allowed_markets.length ? g.allowed_markets.map(m => m.replace("-USD","")).join(", ") : "all"],
   ].map(([k,v]) => `<span>${k}</span><span class="mono">${esc(v)}</span>`).join("");
 
+  const rules = s.rules || [];
+  const ruleById = Object.fromEntries(rules.map(r => [r.id, r]));
   const pending = (s.approvals || []).filter(a => a.status === "pending");
   $("approvals").innerHTML = pending.map(a => {
     const mins = Math.max(0, Math.round((a.expires - s.ts) / 60));
+    if (a.kind === "protection_rule") {
+      const r = ruleById[a.rule_id] || a.rule || {};
+      const now = r.mark_now ? `${esc(r.symbol.replace("-USD",""))} now ${price(r.mark_now)} (${r.distance_to_trigger_pct > 0 ? "+" : ""}${r.distance_to_trigger_pct}% to trigger)` : "";
+      return `<div class="ap rule"><div>
+      <div class="tag">Agent wants to arm a protection rule · waiting for you · expires in ${mins} min</div>
+      <h3>${esc(a.rule.text)}</h3>
+      <div class="meta">Once armed, the kit watches the price and acts by itself, once, within your guardrails · armed for ${esc(a.rule.hours)} h${now ? " · " + now : ""}</div>
+      ${a.reason ? `<div class="why">Agent's reason: “${esc(a.reason)}”</div>` : ""}
+      ${(a.preview_violations || []).length ? `<div class="meta neg">At today's price your guardrails would block this hedge: ${esc(a.preview_violations.join(" "))}</div>` : ""}
+    </div><div class="btns"><button class="no" data-id="${a.id}" data-act="reject">Reject</button>
+      <button class="ok" data-id="${a.id}" data-act="approve">Arm rule</button></div></div>`;
+    }
     if (a.kind === "guardrail_change") return `<div class="ap"><div>
       <div class="tag">Agent wants to loosen a limit · waiting for you · expires in ${mins} min</div>
       ${Object.entries(a.changes).map(([k, x]) => `<h3>${esc(x.label)}: ${esc(fmtRule(k, x.from))} → ${esc(fmtRule(k, x.to))}</h3>`).join("")}
@@ -316,14 +382,55 @@ async function state(){
   }).join("");
   document.title = pending.length ? `(${pending.length}) Approve · Strike Agent Kit` : "Strike Agent Kit";
 
+  const FIRED = ["executed", "noop", "blocked", "failed"];
+  const recent = rules.filter(r => FIRED.includes(r.status) && r.triggered_at && s.ts - r.triggered_at < 900 && !dismissed.has(r.id));
+  const firedHtml = recent.map(r => {
+    const ok = r.status === "executed" || r.status === "noop";
+    const at = new Date(r.triggered_at * 1000).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+    const armed = r.armed_at ? new Date(r.armed_at * 1000).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}) : "";
+    const head = r.status === "executed" ? "Protection rule fired" : r.status === "noop" ? "Protection rule fired: already covered"
+      : r.status === "blocked" ? "Protection rule fired, but the guardrails blocked it" : "Protection rule fired, but the order failed";
+    return `<div class="fired${ok ? "" : " bad"}"><div class="shield">${ok ? "✓" : "!"}</div><div>
+      <h3>${head}</h3>
+      <div>${esc(r.text)} · mark ${esc(price(r.trigger_mark))} at ${at}</div>
+      <div class="meta">${esc(resultText(r.result))}${ok && armed ? ` · No click needed: you armed this rule at ${armed}.` : ""}</div>
+    </div><button class="no" data-dismiss="${r.id}">Dismiss</button></div>`;
+  }).join("");
+  if ($("fired").dataset.html !== firedHtml) { $("fired").innerHTML = firedHtml; $("fired").dataset.html = firedHtml; }
+  if (recent.length && !pending.length) document.title = "Rule fired · Strike Agent Kit";
+
+  const STATUS = {proposed: ["awaiting you", "c-warn"], armed: ["watching", "c-ok"], executed: ["fired", "c-ok"],
+                  noop: ["fired · no-op", "c-n"], blocked: ["fired · blocked", "c-bad"], failed: ["fired · failed", "c-bad"],
+                  cancelled: ["cancelled", "c-n"], rejected: ["rejected", "c-n"], expired: ["expired", "c-n"], triggered: ["firing…", "c-warn"]};
+  $("prules").innerHTML = rules.length ? rules.map(r => {
+    const [label, cls] = STATUS[r.status] || [r.status, "c-n"];
+    const live = r.status === "armed" || r.status === "proposed";
+    let meta = "", bar = "";
+    if (live && r.mark_now) {
+      const d = r.distance_to_trigger_pct, base = Math.abs(r.trigger_price / r.mark_at_proposal - 1) * 100 || 1;
+      const frac = 1 - Math.min(1, Math.abs(d) / Math.max(base, Math.abs(d), 0.01));
+      meta = `Mark ${price(r.mark_now)} · trigger ${price(r.trigger_price)} · ${Math.abs(d).toFixed(2)}% to go`
+        + (r.status === "armed" ? ` · expires in ${left(r.expires, s.ts)}` : " · waiting for you to arm it above");
+      bar = `<div class="bar${frac >= .8 ? " bad" : frac >= .5 ? " warn" : ""}"><i style="width:${(frac*100).toFixed(1)}%"></i></div>`;
+    } else if (r.triggered_at) {
+      meta = `Fired ${ago(r.triggered_at)} at ${price(r.trigger_mark)} · ${resultText(r.result)}`;
+    } else if (r.status === "cancelled") {
+      meta = "Cancelled by " + (r.cancelled_by === "human" ? "you" : "the agent");
+    }
+    return `<div class="rl"><span class="chip ${cls}">${r.status === "armed" ? '<span class="dot"></span>' : ""}${label}</span>
+      <span class="t">${esc(r.text)}</span>${live ? `<button data-cancel="${r.id}">Cancel</button>` : "<span></span>"}
+      ${meta ? `<span class="m">${esc(meta)}</span>` : ""}${bar}</div>`;
+  }).join("") : `<div class="empty">No protection rules yet. Ask the agent: “If ADA drops below $0.20, hedge my 5,000 ADA.” You arm it once here; the kit then acts by itself.</div>`;
+  $("watchErr").textContent = s.watcher_error ? "Watcher can't reach Strike right now: " + s.watcher_error : "";
+
   const apStatus = Object.fromEntries((s.approvals || []).map(a => [a.id, a.status]));
   const RESOLVED = {executed: ["you approved", "c-ok"], rejected: ["you rejected", "c-n"], expired: ["expired", "c-n"],
                     blocked_on_approval: ["approved, then blocked", "c-bad"], failed: ["approved, failed", "c-bad"],
-                    applied: ["you approved", "c-ok"]};
+                    applied: ["you approved", "c-ok"], armed: ["you armed it", "c-ok"], cancelled: ["cancelled", "c-n"]};
   const log = s.log.slice().reverse();
   $("feed").innerHTML = log.length ? log.map(e => {
     let [label, cls] = EVENTS[e.event] || [e.event, "c-n"];
-    if ((e.event === "order_pending_approval" || e.event === "guardrail_change_pending") && RESOLVED[apStatus[e.approval_id]]) [label, cls] = RESOLVED[apStatus[e.approval_id]];
+    if (["order_pending_approval", "guardrail_change_pending", "protection_rule_proposed"].includes(e.event) && RESOLVED[apStatus[e.approval_id]]) [label, cls] = RESOLVED[apStatus[e.approval_id]];
     const viol = (e.decision?.violations || e.guardrails?.violations || []).map(v => v.message).join(" ");
     const time = new Date(e.ts).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
     return `<div class="ev"><span class="chip ${cls}">${label}</span><span class="t">${esc(describe(e))} <span class="mono" style="color:var(--muted);font-size:11px">${time}</span></span>
@@ -347,6 +454,18 @@ $("approvals").onclick = async ev => {
     body: JSON.stringify({action: b.dataset.act})});
   state();
 };
+$("fired").onclick = ev => {
+  const b = ev.target.closest("button[data-dismiss]"); if (!b) return;
+  dismissed.add(b.dataset.dismiss);
+  try { localStorage.setItem("ska-dismissed", JSON.stringify([...dismissed])); } catch (e) {}
+  state();
+};
+$("prules").onclick = async ev => {
+  const b = ev.target.closest("button[data-cancel]"); if (!b) return;
+  b.disabled = true;
+  await fetch(`/api/rules/${b.dataset.cancel}/cancel`, {method:"POST", headers:{"Content-Type":"application/json","X-Strike-Dashboard":"1"}, body: "{}"});
+  state();
+};
 $("ksBtn").onclick = async () => {
   if (killOn && !confirm("Release the kill switch? The agent will be able to open new positions again.")) return;
   await fetch("/api/kill-switch", {method:"POST", headers:{"Content-Type":"application/json","X-Strike-Dashboard":"1"}, body: JSON.stringify({on: !killOn})});
@@ -361,7 +480,10 @@ state(); funding(); setInterval(state, 2000); setInterval(funding, 30000);
 
 if __name__ == "__main__":
     from .factory import build_service
+    from .watcher import start_watcher
 
     port = int(os.environ.get("STRIKE_DASHBOARD_PORT", "8787")) or 8787
     print(f"Dashboard on http://127.0.0.1:{port}  (mode: {os.environ.get('STRIKE_MODE', 'mock')})")
-    serve(build_service(), port).serve_forever()
+    svc = build_service()
+    start_watcher(svc)
+    serve(svc, port).serve_forever()

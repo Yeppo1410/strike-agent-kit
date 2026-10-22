@@ -137,3 +137,36 @@ class Journal:
             state["approvals"][approval_id].update(fields)
             self._write_state(state)
 
+    # ---- protection rules --------------------------------------------------
+    def add_rule(self, rule: dict[str, Any]) -> str:
+        rule_id = uuid.uuid4().hex[:6]
+        state = self._read_state()
+        rules = state.setdefault("rules", {})
+        rules[rule_id] = {"id": rule_id, "created": time.time(), **rule}
+        done = sorted((r for r in rules.values() if r["status"] not in ("proposed", "armed")),
+                      key=lambda r: r["created"])
+        for r in done[:-30]:
+            rules.pop(r["id"], None)
+        self._write_state(state)
+        return rule_id
+
+    def rules(self) -> list[dict[str, Any]]:
+        state = self._read_state()
+        rules = state.get("rules", {})
+        changed = False
+        for r in rules.values():
+            if r["status"] in ("proposed", "armed") and r["expires"] < time.time():
+                r["status"], changed = "expired", True
+        if changed:
+            self._write_state(state)
+        return sorted(rules.values(), key=lambda r: r["created"], reverse=True)
+
+    def get_rule(self, rule_id: str) -> dict[str, Any] | None:
+        return next((r for r in self.rules() if r["id"] == rule_id), None)
+
+    def update_rule(self, rule_id: str, **fields: Any) -> None:
+        state = self._read_state()
+        if rule_id in state.get("rules", {}):
+            state["rules"][rule_id].update(fields)
+            self._write_state(state)
+

@@ -54,8 +54,11 @@ class AgentService:
         self.policies = policy_store
         self.journal = journal
         self.poll_timeout_s = poll_timeout_s
-        # The MCP server and the dashboard run in different threads of one process.
+        # The MCP server, the dashboard and the rule watcher run in different threads of one process.
         self.lock = threading.RLock()
+        # Called with (rule, outcome) whenever a protection rule fires, e.g. a desktop notification.
+        self.on_rule_fired: list[Any] = []
+        self.watcher_error: str | None = None
 
     # ---- helpers ---------------------------------------------------------
     @staticmethod
@@ -439,8 +442,9 @@ class AgentService:
                                "You cannot approve it yourself. Tell the user it is waiting, and use "
                                "get_order_status with this approval_id to see the outcome. Do not resubmit."}
 
-        # The confirmation-token flow only applies when human approval is switched off.
-        use_token = decision.needs_confirmation and not policy.require_human_approval
+        # The confirmation-token flow only applies when human approval is switched off, and never to
+        # an order the human already approved (an approval card or an armed protection rule).
+        use_token = decision.needs_confirmation and not policy.require_human_approval and not _approved_by_human
         if dry_run or (use_token and not (
                 confirmation_token and self.journal.redeem_token(confirmation_token, key))):
             token = self.journal.issue_token(key) if use_token else None
@@ -546,7 +550,7 @@ class AgentService:
 
     def hedge_exposure(self, asset: str, spot_amount: float | str, hedge_ratio: float | str = 1.0,
                        dry_run: bool = False, confirmation_token: str | None = None,
-                       reason: str | None = None) -> dict[str, Any]:
+                       reason: str | None = None, _approved_by_human: bool = False) -> dict[str, Any]:
         """Bring the perp position to -(spot_amount * hedge_ratio)."""
         symbol = self.normalize_symbol(asset)
         ratio = D(str(hedge_ratio))
@@ -568,7 +572,8 @@ class AgentService:
         reducing = current != 0 and (delta > 0) != (current > 0) and abs(delta) <= abs(current)
         res = self.place_order(symbol, "buy" if delta > 0 else "sell", size=str(abs(delta)),
                                reduce_only=reducing, dry_run=dry_run, confirmation_token=confirmation_token,
-                               reason=reason or f"hedge {spot_amount} {asset} at ratio {ratio}")
+                               reason=reason or f"hedge {spot_amount} {asset} at ratio {ratio}",
+                               _approved_by_human=_approved_by_human)
         res["hedge_plan"] = plan
         return res
 
@@ -577,6 +582,213 @@ class AgentService:
         res = self.backend.cancel_all(sym)
         self.journal.log("cancel_all", symbol=sym)
         return {"status": "submitted", "symbol": sym, "response": res}
+
+    # ---- protection rules -------------------------------------------------
+    # A rule is "if <market> trades below/above <price>, do <action>". The agent can only propose
+    # one; the human arms it once in the dashboard. After that the watcher fires it by itself, at
+    # most once, through the same guardrailed order pipeline (kill switch and limits still apply).
+    MAX_ACTIVE_RULES = 5
+    MAX_RULE_HOURS = 168
+
+    @staticmethod
+    def _rule_text(r: dict[str, Any]) -> str:
+        base = r["symbol"].replace("-USD", "")
+        when = f"If {base} {'falls below' if r['condition'] == 'below' else 'rises above'} ${D(r['trigger_price']):,}"
+        if r["action"] == "hedge":
+            ratio = D(str(r["hedge_ratio"]))
+            what = f"hedge {D(r['spot_amount']):,} {base}" + ("" if ratio == 1 else f" at {format(ratio.normalize(), 'f')}:1")
+        else:
+            what = f"close my {base} position"
+        return f"{when}: {what}"
+
+    @staticmethod
+    def _met(condition: str, mark: D, trigger: D) -> bool:
+        return mark <= trigger if condition == "below" else mark >= trigger
+
+    def propose_protection_rule(self, asset: str, condition: str, trigger_price: float | str, action: str = "hedge",
+                                spot_amount: float | str | None = None, hedge_ratio: float | str = 1.0,
+                                expires_in_hours: float = 24, reason: str | None = None) -> dict[str, Any]:
+        symbol = self.normalize_symbol(asset)
+        condition, action = str(condition).strip().lower(), str(action).strip().lower()
+        try:
+            m = self._market(symbol)
+            if condition not in ("below", "above"):
+                raise OrderRejected("condition must be 'below' or 'above'.")
+            if action not in ("hedge", "close"):
+                raise OrderRejected("action must be 'hedge' (short to cover spot holdings) or 'close' (close the position).")
+            trigger = D(str(trigger_price))
+            if trigger <= 0:
+                raise OrderRejected("trigger_price must be above 0.")
+            hours = float(expires_in_hours)
+            if not 0 < hours <= self.MAX_RULE_HOURS:
+                raise OrderRejected(f"expires_in_hours must be between 0 and {self.MAX_RULE_HOURS}.")
+            ratio = D(str(hedge_ratio))
+            if action == "hedge":
+                if spot_amount is None or D(str(spot_amount)) <= 0:
+                    raise OrderRejected("A hedge rule needs spot_amount: how much of the asset the user holds.")
+                if not D(0) < ratio <= D("1.5"):
+                    raise OrderRejected("hedge_ratio must be above 0 and at most 1.5.")
+            elif not any(p["symbol"] == symbol and D(p["size"]) != 0 for p in self.backend.get_positions()):
+                raise OrderRejected(f"There is no open {symbol} position to close.")
+            active = [r for r in self.journal.rules() if r["status"] in ("proposed", "armed")]
+            if len(active) >= self.MAX_ACTIVE_RULES:
+                raise OrderRejected(f"There are already {len(active)} active rules (max {self.MAX_ACTIVE_RULES}). "
+                                    "Cancel one first.")
+        except (OrderRejected, ArithmeticError, ValueError) as e:
+            self.journal.log("protection_rule_invalid", symbol=symbol, error=str(e), reason=reason)
+            return {"status": "invalid", "error": str(e), "message": "No rule was created."}
+
+        mark = D(m["mark_price"])
+        rule: dict[str, Any] = {
+            "status": "proposed", "symbol": symbol, "condition": condition,
+            "trigger_price": format(trigger.normalize(), "f"), "action": action,
+            "spot_amount": format(D(str(spot_amount)).normalize(), "f") if action == "hedge" else None,
+            "hedge_ratio": format(ratio.normalize(), "f") if action == "hedge" else None,
+            "hours": hours, "reason": reason, "mark_at_proposal": str(mark),
+            "expires": time.time() + self.journal.APPROVAL_TTL_S,
+        }
+        rule["text"] = self._rule_text(rule)
+        already = self._met(condition, mark, trigger)
+        rule_id = self.journal.add_rule(rule)
+        approval_id = self.journal.add_approval({"kind": "protection_rule", "rule_id": rule_id, "rule": rule,
+                                                 "reason": reason})
+        self.journal.update_rule(rule_id, approval_id=approval_id)
+
+        # What it would do at today's price, so the agent can show the user the size and the guardrail check.
+        preview = None
+        if action == "hedge":
+            p = self.hedge_exposure(symbol, rule["spot_amount"], rule["hedge_ratio"], dry_run=True,
+                                    reason=f"preview for protection rule {rule_id}")
+            preview = {k: p.get(k) for k in ("status", "order", "hedge_plan", "message") if p.get(k) is not None}
+            if p.get("guardrails"):
+                preview["guardrails_now"] = {k: p["guardrails"].get(k) for k in ("allowed", "violations")}
+            if p.get("status") == "blocked":
+                warn = [v.get("message") for v in p["guardrails"].get("violations", [])]
+                self.journal.update_rule(rule_id, preview_violations=warn)
+                self.journal.update_approval(approval_id, preview_violations=warn)
+        self.journal.log("protection_rule_proposed", rule_id=rule_id, approval_id=approval_id, rule=rule["text"],
+                         mark=str(mark), reason=reason)
+        dist = (trigger / mark - 1) * 100 if mark else D(0)
+        return {
+            "status": "pending_approval", "rule_id": rule_id, "approval_id": approval_id, "rule": rule["text"],
+            "mark_now": str(mark), "distance_to_trigger_pct": _f(dist, 2),
+            "fires_immediately_on_approval": already, "expires_after_arming_hours": hours,
+            "preview_at_current_price": preview,
+            "message": (("At today's price the guardrails would block this hedge, so the rule would fire and be "
+                         "blocked. Tell the user before they arm it. " if preview and preview.get("status") == "blocked"
+                         else "") +
+                        "Waiting for the user to arm this rule in their dashboard; you cannot arm it. Once armed, "
+                        "the kit watches the price and acts by itself, once, within the guardrails. "
+                        + ("The condition is already met, so it will fire as soon as they approve. Say so. "
+                           if already else "")
+                        + "Check the outcome with list_protection_rules."),
+        }
+
+    def list_protection_rules(self, limit: int = 10) -> list[dict[str, Any]]:
+        rules = self.journal.rules()[:limit]
+        marks: dict[str, Any] = {}
+        if any(r["status"] in ("proposed", "armed") for r in rules):
+            try:
+                marks = {s: D(mk["mark_price"]) for s, mk in self.backend.get_markets().items()}
+            except Exception:  # noqa: BLE001  a read failure shouldn't hide the rules
+                marks = {}
+        out = []
+        for r in rules:
+            row = {k: r.get(k) for k in ("id", "status", "text", "symbol", "condition", "trigger_price", "action",
+                                         "spot_amount", "hedge_ratio", "reason", "created", "armed_at", "expires",
+                                         "triggered_at", "trigger_mark", "result", "approval_id", "hours",
+                                         "mark_at_proposal", "cancelled_by")}
+            mark = marks.get(r["symbol"])
+            if r["status"] in ("proposed", "armed") and mark:
+                row["mark_now"] = str(mark)
+                row["distance_to_trigger_pct"] = _f((D(r["trigger_price"]) / mark - 1) * 100, 2)
+            out.append(row)
+        return out
+
+    def cancel_protection_rule(self, rule_id: str, by: str = "agent", reason: str | None = None) -> dict[str, Any]:
+        r = self.journal.get_rule(rule_id)
+        if r is None:
+            return {"status": "unknown", "error": f"No protection rule {rule_id}."}
+        if r["status"] not in ("proposed", "armed"):
+            return {"status": r["status"], "error": f"Rule is already {r['status']}."}
+        self.journal.update_rule(rule_id, status="cancelled", decided=time.time(), cancelled_by=by)
+        if r["status"] == "proposed" and r.get("approval_id"):
+            self.journal.update_approval(r["approval_id"], status="cancelled", decided=time.time())
+        self.journal.log("protection_rule_cancelled", rule_id=rule_id, rule=r["text"], by=by, reason=reason)
+        return {"status": "cancelled", "rule_id": rule_id, "rule": r["text"]}
+
+    def _arm_rule_by_human(self, approval: dict[str, Any], approve: bool) -> dict[str, Any]:
+        rule_id = approval["rule_id"]
+        r = self.journal.get_rule(rule_id)
+        if r is None or r["status"] != "proposed":
+            self.journal.update_approval(approval["id"], status="expired", decided=time.time())
+            return {"status": "expired", "error": "The rule is no longer waiting for approval."}
+        if not approve:
+            self.journal.update_approval(approval["id"], status="rejected", decided=time.time())
+            self.journal.update_rule(rule_id, status="rejected", decided=time.time())
+            self.journal.log("protection_rule_rejected", rule_id=rule_id, approval_id=approval["id"],
+                             rule=r["text"], reason=r.get("reason"))
+            return {"status": "rejected"}
+        now = time.time()
+        self.journal.update_rule(rule_id, status="armed", armed_at=now, expires=now + float(r["hours"]) * 3600)
+        self.journal.update_approval(approval["id"], status="armed", decided=now)
+        self.journal.log("protection_rule_armed", rule_id=rule_id, approval_id=approval["id"], rule=r["text"],
+                         reason=r.get("reason"))
+        fired = self.check_protection_rules()  # fires at once if the condition is already met
+        return {"status": "armed", "rule_id": rule_id, "fired": fired or None}
+
+    def check_protection_rules(self) -> list[dict[str, Any]]:
+        """Evaluate armed rules against current marks and fire the ones whose condition is met.
+        Called by the watcher thread every few seconds, and right after a rule is armed."""
+        armed = [r for r in self.journal.rules() if r["status"] == "armed"]
+        if not armed:
+            return []
+        markets = self.backend.get_markets()
+        fired = []
+        for r in armed:
+            m = markets.get(r["symbol"])
+            mark = D(m["mark_price"]) if m and m.get("mark_price") else D(0)
+            if mark <= 0:
+                continue
+            self.journal.update_rule(r["id"], last_mark=str(mark), last_checked=time.time())
+            if not self._met(r["condition"], mark, D(r["trigger_price"])):
+                continue
+            fired.append(self._fire_rule(r, mark))
+        return fired
+
+    def _fire_rule(self, r: dict[str, Any], mark: D) -> dict[str, Any]:
+        # Mark it first: a rule fires at most once, even if the order fails.
+        self.journal.update_rule(r["id"], status="triggered", triggered_at=time.time(), trigger_mark=str(mark))
+        self.journal.log("protection_rule_triggered", rule_id=r["id"], rule=r["text"], mark=str(mark))
+        armed_at = time.strftime("%H:%M", time.localtime(r.get("armed_at") or time.time()))
+        why = f"Protection rule {r['id']} ({r['text']}), armed by you at {armed_at}"
+        try:
+            if r["action"] == "hedge":
+                res = self.hedge_exposure(r["symbol"], r["spot_amount"], r["hedge_ratio"], dry_run=False,
+                                          reason=why, _approved_by_human=True)
+            else:
+                res = self.close_position(r["symbol"], reason=why)
+        except Exception as e:  # noqa: BLE001  never let one rule kill the watcher
+            res = {"status": "error", "error": str(e)}
+        st = res.get("status")
+        outcome = ("executed" if st == "submitted" and res.get("exchange_status") in ("filled", "open", "unknown")
+                   else "noop" if st == "noop" else "blocked" if st == "blocked" else "failed")
+        summary = {k: res.get(k) for k in ("status", "exchange_status", "filled", "avg_price", "close_reason",
+                                           "error", "message") if res.get(k) is not None}
+        if res.get("order"):
+            summary["order"] = {k: res["order"].get(k) for k in ("symbol", "side", "size", "reduce_only")}
+        if st == "blocked":
+            summary["violations"] = [v.get("message") for v in (res.get("guardrails") or {}).get("violations", [])]
+        self.journal.update_rule(r["id"], status=outcome, result=summary)
+        self.journal.log(f"protection_rule_{outcome}", rule_id=r["id"], rule=r["text"], mark=str(mark),
+                         result=summary, reason=why)
+        out = {"rule_id": r["id"], "rule": r["text"], "mark": str(mark), "outcome": outcome, "result": summary}
+        for cb in self.on_rule_fired:
+            try:
+                cb(r, out)
+            except Exception:  # noqa: BLE001
+                pass
+        return out
 
     # ---- human approval queue ---------------------------------------------
     def list_approvals(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -588,6 +800,10 @@ class AgentService:
         if a is None:
             return {"status": "unknown", "error": f"No approval request {approval_id}."}
         out = {"approval_id": approval_id, "status": a["status"]}
+        if a.get("kind") == "protection_rule":
+            rule = self.journal.get_rule(a["rule_id"]) or {}
+            return {**out, "rule_id": a["rule_id"], "rule": rule.get("text"), "rule_status": rule.get("status"),
+                    "result": rule.get("result")}
         out.update({"changes": a["changes"]} if a.get("kind") == "guardrail_change" else {"order": a["order"]})
         if a.get("result"):
             out["result"] = a["result"]
@@ -600,6 +816,8 @@ class AgentService:
             return {"status": "unknown", "error": f"No approval request {approval_id}."}
         if a["status"] != "pending":
             return {"status": a["status"], "error": f"Request is already {a['status']}."}
+        if a.get("kind") == "protection_rule":
+            return self._arm_rule_by_human(a, approve)
         if a.get("kind") == "guardrail_change":
             if not approve:
                 self.journal.update_approval(approval_id, status="rejected", decided=time.time())

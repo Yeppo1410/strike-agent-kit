@@ -18,12 +18,15 @@ Giving an AI your trading account is normally scary. Here the AI gets **a key wi
 - **You set the rules.** For example: at most $2,500 per trade, at most 5x leverage, stop after a $250 loss today. The AI can't change these rules or work around them.
 - **Nothing new happens without your click.** Every trade that adds risk waits in your dashboard until you approve it. The AI cannot approve on your behalf. So a casual "BTC looks strong" in a chat can never quietly turn into a trade, and neither can instructions hidden in a web page the AI read.
 - **There's an emergency brake.** The AI can pull it when something looks off. Only you can release it, from your dashboard. While it's on, no new bets are possible, but closing positions always works.
+- **It can stand guard while you're away.** Tell it *"if ADA drops below $0.20, hedge my 5,000 ADA"*. You approve that rule once; from then on the kit watches the price and places the hedge by itself the moment ADA crosses the line, still inside your limits. You get a notification and a big "rule fired" banner in the dashboard.
 - **Everything is written down.** Every trade it proposed, placed or was refused is logged together with the AI's reason.
 
 Things you can ask:
 
 - *"Where can I earn the most from funding right now?"*
 - *"I hold 3,000 ADA, protect me if it falls."*
+- *"If ADA drops below $0.20, hedge my 5,000 ADA."*
+- *"If SOL falls under $90, close my SOL long."*
 - *"How am I doing today?"*
 - *"Close everything."*
 - *"Stop, no new trades."*
@@ -62,6 +65,8 @@ It uses Strike's API wallets, which can trade but cannot withdraw. Even a misbeh
 | `close_position` | Reduce-only close. Always allowed. If the book is too thin for 0.5% slippage it retries once at `close_max_slippage`, then tells you plainly instead of looping. |
 | `cancel_open_orders` | Cancels open orders on all markets or on one market |
 | `propose_guardrail_change` | Change a limit. **Tightening applies at once; loosening waits for your click in the dashboard.** "Lower my daily loss limit to $100" takes effect now; "raise it to $500" becomes an approval card. |
+| `propose_protection_rule` | "If ADA drops below $0.20, hedge my 5,000 ADA" or "if SOL falls under $90, close my long". The agent proposes; **you arm it once** in the dashboard; the kit then watches the mark price and fires the action by itself, at most once, through the normal guardrails. |
+| `list_protection_rules`, `cancel_protection_rule` | The rules with live distance to the trigger, and whether they fired and what happened. The agent can disarm a rule, never arm one. |
 | `engage_kill_switch` | Blocks all new risk immediately. The agent can turn it on but not off. |
 | `get_guardrails`, `get_action_log` | The policy, and an audit log of every preview, block and order together with the agent's stated reason |
 
@@ -102,6 +107,12 @@ Design rules:
   - Changes to `close_max_slippage` and `allowed_order_types` always wait for you, in either direction, because a "stricter" value there could stop you from closing a position in a thin market.
   - The kill switch is not part of it: the agent can only engage it, and only you can release it.
   - The server instructions tell the agent to propose loosening only when you ask for it, never as a way around a blocked order.
+- **Protection rules are pre-approved, not unguarded.** The agent can only *propose* a rule ("if ADA trades below $0.20, hedge 5,000 ADA"). It becomes active only when you click **Arm rule** in the dashboard. A watcher thread then checks the mark price every few seconds (`STRIKE_WATCH_INTERVAL_S`, default 5) and, when the condition is met, places the order without asking again: that click was your approval.
+  - The order still runs through every guardrail at the moment it fires. If the kill switch is on or a limit is hit, the rule fires, is **blocked**, and tells you so. It never retries.
+  - A rule fires at most once, expires after 24 hours by default (max 7 days), and you or the agent can cancel it at any time. At most 5 rules are active at once.
+  - When you are asked to arm it, the card shows what the hedge would be at today's price, and warns you if your guardrails would block it.
+  - On a Mac, a firing rule also posts a desktop notification (turn off with `STRIKE_NOTIFY=0`).
+  - The daily loss limit counts too: in a sharp drop, losses elsewhere can trip it and block the hedge. Keep the limit realistic, or set the trigger earlier.
 - **No workarounds.** The server instructions tell the agent never to split or resize an order to get past a limit. Per-position and total-exposure caps also make splitting pointless.
 - **Everything is logged** to `.strike-agent/journal.jsonl`.
 
@@ -113,9 +124,10 @@ The dashboard runs inside the MCP server process and is served on `http://127.0.
 - positions and the active guardrails
 - the funding board
 - a live feed of everything the agent did, with its stated reasons
-- **approval cards** for orders and looser limits waiting for you, with Approve and Reject buttons, the agent's reason, and a countdown to expiry. The browser tab title shows the number of waiting requests.
+- **protection rules**: armed rules with a pulsing *watching* badge, the live mark, the distance to the trigger and a Cancel button. When a rule fires, a banner at the top says what it did, at what price, and that no click was needed.
+- **approval cards** for orders, looser limits and protection rules waiting for you, with Approve and Reject buttons, the agent's reason, and a countdown to expiry. The browser tab title shows the number of waiting requests.
 
-It is the only place orders and looser limits can be **approved** and the only place the kill switch can be **released**. There are no MCP tools for either. Requests without the dashboard's custom header are refused, so other websites open in your browser can't flip the switch.
+It is the only place orders, looser limits and protection rules can be **approved** and the only place the kill switch can be **released**. There are no MCP tools for either. Requests without the dashboard's custom header are refused, so other websites open in your browser can't flip the switch.
 
 Run `python scripts/dashboard_preview.py` to see it on a mock account with sample activity.
 
@@ -137,7 +149,7 @@ agent request
 
 ```bash
 pip install -e .
-python -m pytest            # 44 tests
+python -m pytest            # 88 tests
 python scripts/demo_walkthrough.py   # runs the full demo over a real MCP connection
 ```
 
@@ -195,13 +207,14 @@ strike_agent_kit/
   service.py      Order pipeline, funding board, hedging, kill switch
   journal.py      Audit log, day-start equity, confirmation tokens
   mock.py         In-memory Strike + Hyperliquid for tests and demos
-  server.py       MCP server (13 tools, plus simulate_price_move in mock mode)
+  server.py       MCP server (16 tools, plus simulate_price_move in mock mode)
   dashboard.py    Local control panel (stdlib HTTP, single page)
+  watcher.py      Background thread that fires armed protection rules; macOS notifications
 scripts/
   demo_walkthrough.py   Demo rehearsal over MCP stdio
   testnet_check.py      Read-only connectivity check with real keys
   dashboard_preview.py  Dashboard on a mock account with sample activity
-tests/                  Signing, client (signature-verifying fake server), guardrails, service, dashboard
+tests/                  Signing, client (signature-verifying fake server), guardrails, service, protection rules, dashboard
 ```
 
 ## Roadmap
@@ -216,4 +229,5 @@ tests/                  Signing, client (signature-verifying fake server), guard
 
 - Daily PnL is the change in equity since the first reading of the UTC day, minus deposits and withdrawals. A wallet change while positions stay the same is treated as a deposit or withdrawal, so funding paid in that window is left out too.
 - If your margin is held in ADA (or another volatile asset), set `STRIKE_COLLATERAL_ASSET=ADA`. Price moves on the collateral then count toward daily PnL and the loss limit, and only changes in the amount held count as deposits or withdrawals. The kit assumes the whole wallet is held in that asset.
+- Protection rules trigger on Strike's mark price, checked every few seconds while the MCP server (Claude Desktop) is running. If the server isn't running, nothing is watched. A rule fires a market order, so in a fast or thin market the fill can be worse than the trigger price.
 - Mock prices are illustrative, not live.

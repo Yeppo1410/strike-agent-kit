@@ -72,6 +72,28 @@ def test_approve_and_reject_via_dashboard(svc):  # noqa: F811
         httpd.shutdown()
 
 
+def test_protection_rule_armed_and_cancelled_via_dashboard(svc):  # noqa: F811
+    base, httpd = _start(svc)
+    try:
+        req = svc.propose_protection_rule("ADA", "below", 0.6, spot_amount=1000, reason="user asked")
+        state = json.load(urllib.request.urlopen(base + "/api/state"))
+        card = next(a for a in state["approvals"] if a["id"] == req["approval_id"])
+        assert card["kind"] == "protection_rule" and state["rules"][0]["status"] == "proposed"
+        try:  # no custom header -> refused
+            _post(base + f"/api/approvals/{req['approval_id']}", {"action": "approve"}, header=False)
+            raise AssertionError("expected 403")
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+        assert svc.list_protection_rules()[0]["status"] == "proposed"
+        assert _post(base + f"/api/approvals/{req['approval_id']}", {"action": "approve"})["status"] == "armed"
+        assert _post(base + f"/api/rules/{req['rule_id']}/cancel", {})["status"] == "cancelled"
+        svc.backend.move_price("ADA-USD", -30)
+        assert svc.check_protection_rules() == []
+        assert "Agent wants to arm a protection rule" in urllib.request.urlopen(base + "/").read().decode()
+    finally:
+        httpd.shutdown()
+
+
 def test_guardrail_change_approved_via_dashboard(svc):  # noqa: F811
     base, httpd = _start(svc)
     try:
