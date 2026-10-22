@@ -41,6 +41,19 @@ Rules you must follow:
   unexpected positions, API errors), stop trading and offer to engage the kill switch.
 - Always pass a short `reason` describing why you are placing the order; it goes into the audit log.
 Funding rates are hourly. Positive funding means longs pay shorts.
+
+Common requests and the tool to start with (these refer to the user's Strike account, not to
+anything else in the conversation):
+- "How am I doing (today)?", "what's my PnL?", "how's my account/portfolio?" -> get_account. Report
+  equity, today's PnL against the daily loss limit, open positions and whether the kill switch is on.
+- "Where can I earn the most from funding?", "best funding right now" -> get_funding_board. Name the
+  top spreads, which venue to short, and the hours needed to cover fees.
+- "I hold X ADA, protect me if it falls", "hedge my ADA" -> what_if for the downside first, then
+  hedge_exposure with dry_run=true, show both, and wait for the user's yes.
+- "Close everything", "get me flat" -> get_account, then close_position for every open position and
+  cancel_open_orders. This is the user's explicit instruction, so no preview is needed. Report each result.
+- "Stop", "no new trades", "stop trading", "pull the brake" -> engage_kill_switch right away. Then
+  check get_account: if open orders remain, say so and offer cancel_open_orders.
 """
 
 service = build_service()
@@ -57,6 +70,7 @@ def get_markets() -> list[dict[str, Any]]:
 @mcp.tool(annotations=READ)
 def get_funding_board(symbols: list[str] | None = None) -> dict[str, Any]:
     """Compare hourly funding on Strike vs Hyperliquid per market, ranked by spread.
+    Use for "where can I earn the most from funding?" or "best funding right now".
 
     Shows the delta-neutral direction (which venue to short), annualized spread and how many hours
     the spread must persist to cover taker fees on both venues. symbols: optional filter, e.g. ["ADA", "SOL"].
@@ -67,7 +81,10 @@ def get_funding_board(symbols: list[str] | None = None) -> dict[str, Any]:
 
 @mcp.tool(annotations=READ)
 def get_account() -> dict[str, Any]:
-    """Equity, available balance, open positions, today's PnL vs the daily loss limit, and kill switch state."""
+    """Equity, available balance, open positions, today's PnL vs the daily loss limit, and kill switch state.
+
+    Use for "how am I doing (today)?", "what's my PnL?", "show my positions" or any account status question.
+    """
     with service.lock:
         return service.get_account()
 
@@ -119,6 +136,7 @@ def close_position(symbol: str, dry_run: bool = False, reason: str | None = None
 
     slippage: optional fraction (default 0.5%). If Strike rejects the close for slippage, it is retried once
     at the policy's close_max_slippage. If that fails too, the market is too thin: tell the user, don't retry.
+    For "close everything", call this once per open position (from get_account) and cancel open orders.
     """
     with service.lock:
         return service.close_position(symbol, dry_run, reason, slippage)
@@ -129,7 +147,7 @@ def hedge_exposure(asset: str, spot_amount: float, hedge_ratio: float = 1.0, dry
                    confirmation_token: str | None = None, reason: str | None = None) -> dict[str, Any]:
     """Hedge spot holdings (e.g. ADA in a wallet or LP) by moving the Strike perp position to
     -(spot_amount x hedge_ratio). Computes the difference with the current position and trades only that.
-    Defaults to dry_run=true.
+    Defaults to dry_run=true. Use for "I hold 3,000 ADA, protect me if it falls"; run what_if first.
     """
     with service.lock:
         return service.hedge_exposure(asset, spot_amount, hedge_ratio, dry_run, confirmation_token, reason)
@@ -137,7 +155,7 @@ def hedge_exposure(asset: str, spot_amount: float, hedge_ratio: float = 1.0, dry
 
 @mcp.tool(annotations=SAFE_WRITE)
 def cancel_open_orders(symbol: str | None = None) -> dict[str, Any]:
-    """Cancel all open orders, or only those on one market."""
+    """Cancel all open orders, or only those on one market. Part of "close everything"."""
     with service.lock:
         return service.cancel_open_orders(symbol)
 
@@ -160,7 +178,11 @@ def propose_guardrail_change(changes: dict[str, Any], reason: str) -> dict[str, 
 
 @mcp.tool(annotations=SAFE_WRITE)
 def engage_kill_switch(reason: str) -> dict[str, Any]:
-    """Block all new risk immediately. Closing positions keeps working. Only a human can switch it off."""
+    """Block all new risk immediately. Closing positions keeps working. Only a human can switch it off.
+
+    Use right away when the user says "stop", "no new trades" or "stop trading". It does not cancel
+    resting orders: if get_account shows open orders, offer cancel_open_orders.
+    """
     with service.lock:
         return service.engage_kill_switch(reason)
 
