@@ -2,8 +2,8 @@
 
 **Setup**
 - Screen split in two: Claude Desktop with the `strike` MCP server on the left, the dashboard (`http://127.0.0.1:8787`) on the right.
-- Strike says the final submission should run on **mainnet**, so record against mainnet with a small balance and the mainnet preset (see "Mainnet run" below).
-- The amounts below fit the preset: max $150 per order, 3x leverage, every new trade approved in the dashboard. Scale them if your preset differs.
+- Record on **testnet** (the default `guardrails.json`) or, optionally, on mainnet with a small balance and the mainnet preset (see "Mainnet run" below). The hackathon rules don't require mainnet.
+- The amounts below fit the mainnet preset: max $150 per order, 3x leverage. On testnet (`guardrails.json`: max $2,500 per order, 5x) use the testnet amounts in the note under the table.
 
 | Time | On screen | What you say |
 |---|---|---|
@@ -20,6 +20,8 @@
 | 1:31 | Click **Release** on the dashboard. | "Releasing is a human decision." |
 | 1:36 | Builder code slide | "Distributed through Builder Connect, every agent trade carries a builder fee, so good agents with tight guardrails become a business on Strike." |
 
+**Testnet amounts:** at 0:54 say *"short $5,000 of BTC at 10x"* so the $2,500 order cap blocks it (over the leverage cap alone, the kit lowers leverage to 5x instead of blocking). At 1:03 say *"raise my max order to $4,000"*, then *"lower my daily loss limit to $200"*, and afterwards `git checkout guardrails.json`. Testnet funding rates are flat defaults, so keep the 0:08 funding beat short or say the numbers are testnet.
+
 If the video runs long, the 0:46 "BTC looks strong" beat is the easiest to cut: the approval card already makes the same point at 0:20.
 
 **Fallback:** run `python scripts/dashboard_preview.py` plus the mock walkthrough, and say on screen that it's simulated. In mock mode the walkthrough also simulates a 25% ADA drop (`simulate_price_move`, steps 5b–5e) and shows the daily loss limit blocking the next trade; that tool doesn't exist on testnet or mainnet.
@@ -33,7 +35,7 @@ If the video runs long, the 0:46 "BTC looks strong" beat is the easiest to cut: 
   3. Connect the wallet in the Strike testnet app and deposit.
 - Create the API wallet on the API Wallets page of the account that holds the funds.
 
-## Mainnet run (submission)
+## Mainnet run (optional)
 
 1. Use a fresh wallet, deposit a small amount (about $40–60), and create an API wallet for that account.
 2. Set up `.env`:
@@ -54,5 +56,5 @@ If the video runs long, the 0:46 "BTC looks strong" beat is the easiest to cut: 
 
 - [ ] GitHub repo is public, with the README at the top level
 - [ ] Demo video uploaded (YouTube unlisted or Loom)
-- [ ] Screenshot or log of a real filled mainnet order (the dashboard activity feed works)
+- [ ] Screenshot or log of a real filled order on testnet or mainnet (the dashboard activity feed works)
 - [ ] Submission form filled in before **Friday 23 Oct, 16:00 Amsterdam** (10:00 EST)

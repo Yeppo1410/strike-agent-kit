@@ -164,7 +164,7 @@ Then ask something like: *"Which Strike market has the best funding edge vs Hype
 
 ## Testnet and mainnet
 
-Strike asks for the final hackathon submission to run on mainnet. Testnet is for building. `DEMO.md` walks through both.
+The kit runs on both. Testnet is the safe default for building and demos; mainnet is locked behind an explicit opt-in. `DEMO.md` walks through both.
 
 1. Create an account on Strike testnet and fund it. Testnet deposits are in ADA and need a connected Cardano wallet; an email login can't deposit there. Test ADA comes from the Cardano testnet faucet.
 2. Create an API wallet on the API Wallets page. Alternatively, run `python -m strike_agent_kit.signing` to generate a key pair locally and register the public key there.
