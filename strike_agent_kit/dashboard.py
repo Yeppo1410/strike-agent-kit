@@ -279,10 +279,18 @@ const ago = t => { const s = Math.max(0, Math.round(Date.now()/1000 - t)); retur
 const left = (t, now) => { const m = Math.max(0, Math.round((t - now) / 60)); return m >= 120 ? Math.round(m/60) + " h" : m + " min"; };
 let dismissed = new Set();
 try { dismissed = new Set(JSON.parse(localStorage.getItem("ska-dismissed") || "[]")); } catch (e) {}
+const num = v => { const n = +v; return !isFinite(n) ? String(v) : n >= 1000 ? n.toLocaleString("en-US", {maximumFractionDigits: 2}) : String(+n.toPrecision(6)); };
+const REASONS = {market_order_exceeded_slippage: "no liquidity within the slippage limit", insufficient_balance: "not enough margin",
+                 order_price_out_of_price_floor: "price outside Strike's band"};
 function resultText(res){
   if (!res) return "";
-  if (res.order) return `${res.order.side === "buy" ? "Bought" : "Sold"} ${res.order.size} ${res.order.symbol.replace("-USD","")}`
-    + (res.order.reduce_only ? " (reduce-only)" : "") + (res.avg_price ? ` @ ${res.avg_price}` : "") + (res.exchange_status ? ` · ${res.exchange_status}` : "");
+  if (res.order) {
+    const o = res.order, base = o.symbol.replace("-USD",""), ro = o.reduce_only ? " (reduce-only)" : "";
+    if (res.exchange_status === "filled") return `${o.side === "buy" ? "Bought" : "Sold"} ${num(o.size)} ${base}${ro}` + (res.avg_price ? ` @ ${num(res.avg_price)}` : "");
+    if (res.status === "blocked") return `${o.side === "buy" ? "Buy" : "Sell"} ${num(o.size)} ${base} blocked: ` + (res.violations || []).join(" ");
+    const why = REASONS[res.close_reason] || res.close_reason || res.error || res.exchange_status || "not filled";
+    return `${o.side === "buy" ? "Buy" : "Sell"} ${num(o.size)} ${base}${ro} not filled: ${why}. Nothing was traded.`;
+  }
   return res.error || res.message || (res.violations || []).join(" ") || "";
 }
 
@@ -301,7 +309,7 @@ function describe(e){
   if (o.symbol){
     const n = e.decision?.order_notional_usd ?? e.guardrails?.order_notional_usd;
     let t = `${o.side === "buy" ? "Buy" : "Sell"} ${o.size} ${o.symbol.replace("-USD","")}` + (n ? ` (${usd(n)})` : "") + (o.reduce_only ? " · reduce-only" : "");
-    if (e.event === "order_submitted") t += ` · ${e.exchange_status}` + (e.avg_price ? ` @ ${e.avg_price}` : "");
+    if (e.event === "order_submitted") t += ` · ${e.exchange_status}` + (e.avg_price && e.exchange_status === "filled" ? ` @ ${num(e.avg_price)}` : "");
     return t;
   }
   if (e.changes) return changeText(e.changes);
