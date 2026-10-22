@@ -360,6 +360,7 @@ async function state(){
       <h3>${esc(a.rule.text)}</h3>
       <div class="meta">Once armed, the kit watches the price and acts by itself, once, within your guardrails · armed for ${esc(a.rule.hours)} h${now ? " · " + now : ""}</div>
       ${a.reason ? `<div class="why">Agent's reason: “${esc(a.reason)}”</div>` : ""}
+      ${a.book_warning ? `<div class="meta neg">${esc(a.book_warning)}</div>` : ""}
       ${(a.preview_violations || []).length ? `<div class="meta neg">At today's price your guardrails would block this hedge: ${esc(a.preview_violations.join(" "))}</div>` : ""}
     </div><div class="btns"><button class="no" data-id="${a.id}" data-act="reject">Reject</button>
       <button class="ok" data-id="${a.id}" data-act="approve">Arm rule</button></div></div>`;

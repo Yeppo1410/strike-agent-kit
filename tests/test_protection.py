@@ -129,3 +129,18 @@ def test_proposal_warns_when_guardrails_would_block(svc):  # noqa: F811
     assert req["message"].startswith("At today's price the guardrails would block")
     card = next(a for a in svc.list_approvals() if a["id"] == req["approval_id"])
     assert card["preview_violations"]
+
+
+def test_thin_book_is_flagged_before_sending(svc):  # noqa: F811
+    m = svc.backend.markets["ADA-USD"]
+    m["bid1_price"], m["ask1_price"] = "0.87", "0.88"  # book ~21% above the 0.72 mark, as on testnet 22 Oct
+    prev = svc.place_order("ADA", "sell", notional_usd=200, dry_run=True)
+    assert "likely be cancelled" in prev["order"]["note"]
+    row = next(r for r in svc.get_markets() if r["symbol"] == "ADA-USD")
+    assert row["book_gap_pct"] > 20
+    req = svc.propose_protection_rule("ADA", "below", 0.8, spot_amount=100)
+    assert req["preview_at_current_price"]["book_warning"].startswith("Strike's best bid")
+    assert "order book is far from the mark" in req["message"]
+    assert "likely be cancelled" in next(a for a in svc.list_approvals() if a["id"] == req["approval_id"])["book_warning"]
+    # a healthy book raises nothing
+    assert "likely be cancelled" not in svc.place_order("BTC", "buy", notional_usd=200, dry_run=True)["order"].get("note", "")

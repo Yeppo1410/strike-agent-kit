@@ -22,7 +22,15 @@
 | 1:45 | Click **Release** on the dashboard. | "Releasing is a human decision." |
 | 1:50 | Builder code slide | "Distributed through Builder Connect, every agent trade carries a builder fee, so good agents with tight guardrails become a business on Strike." |
 
-**Protection rule on camera:** a real crossing can take a long time, so pick **[price] a hair above today's ADA mark** (check it in the dashboard or the Strike app, e.g. mark $0.2281 → say "$0.23"). The condition is then already met, the agent will say the rule fires as soon as you arm it, and it does. That's honest to say on screen: "to show it firing, I set the line just above today's price." Before recording, make sure the 0:20 hedge (150 ADA) filled, so the rule only adds the other 500. The first Mac notification may need permission (macOS may list it under "Script Editor"), so trigger one test rule before recording.
+**On testnet, use ETH instead of ADA.** On 22 Oct the testnet ADA and SOL order books sat about 20% away from the mark, so market orders there get cancelled for slippage (the kit now warns about this in every preview). BTC and ETH books are tight. Swap the ADA beats for:
+- 0:20 *"I hold 0.04 ETH. Hedge it on Strike."* (about $95)
+- 0:38 *"What if ETH drops 30%?"* (about $29 each way)
+- 0:46 *"I've got 0.01 more ETH in another wallet. If ETH drops below [price], cover all 0.05."*
+- 1:35 *"Close my ETH hedge."*
+
+Verified live on testnet at 21:47 on 22 Oct: an ETH rule armed in the dashboard fired 0.05 s later and filled; the close filled too.
+
+**Protection rule on camera:** a real crossing can take a long time, so pick **[price] a hair above today's mark** (check it with "what's the ETH price?" or in the Strike app, e.g. mark $2,377 → say "$2,400"). The condition is then already met, the agent will say the rule fires as soon as you arm it, and it does. That's honest to say on screen: "to show it firing, I set the line just above today's price." Before recording, make sure the 0:20 hedge filled, so the rule only adds the extra amount. The first Mac notification may need permission (macOS may list it under "Script Editor"), so trigger one test rule before recording.
 
 **Testnet amounts:** at 1:08 say *"short $5,000 of BTC at 10x"* so the $2,500 order cap blocks it (over the leverage cap alone, the kit lowers leverage to 5x instead of blocking). At 1:17 say *"raise my max order to $4,000"*, then *"lower my daily loss limit to $200"*, and afterwards `git checkout guardrails.json`. Testnet funding rates are flat defaults, so keep the 0:08 funding beat short or say the numbers are testnet.
 

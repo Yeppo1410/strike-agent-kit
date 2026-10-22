@@ -115,8 +115,37 @@ class AgentService:
                 "max_leverage": (m.get("margin_tiers") or [{}])[0].get("max_leverage"),
                 "min_order_size": m.get("order_market_min_size"), "size_step": m.get("order_market_step_size"),
                 "min_notional_usd": m.get("order_min_notional"),
+                "best_bid": m.get("bid1_price"), "best_ask": m.get("ask1_price"),
+                "book_gap_pct": self._book_gap_pct(m),
             })
         return out
+
+    @staticmethod
+    def _book_gap_pct(m: dict[str, Any]) -> float | None:
+        """How far the middle of Strike's top of book sits from the mark price, in %."""
+        try:
+            mark, bid, ask = D(m["mark_price"]), D(m["bid1_price"]), D(m["ask1_price"])
+        except (KeyError, TypeError, ArithmeticError):
+            return None
+        if mark <= 0 or bid <= 0 or ask <= 0:
+            return None
+        return _f(((bid + ask) / 2 / mark - 1) * 100, 2)
+
+    @staticmethod
+    def _thin_book_note(m: dict[str, Any], side: str, slip: D | None) -> str | None:
+        """Warn when the price a market order would hit is further from the mark than the slippage allows."""
+        try:
+            mark = D(m["mark_price"])
+            hit = D(m["bid1_price"] if side == "sell" else m["ask1_price"])
+        except (KeyError, TypeError, ArithmeticError):
+            return None
+        if mark <= 0 or hit <= 0 or slip is None:
+            return None
+        gap = abs(hit / mark - 1)
+        if gap <= slip:
+            return None
+        return (f"Strike's best {'bid' if side == 'sell' else 'ask'} ({hit}) is {gap * 100:.1f}% from the mark "
+                f"({mark}); with {slip * 100:.2f}% slippage this market order will likely be cancelled.")
 
     def get_account(self) -> dict[str, Any]:
         state, account, equity = self._state()
@@ -416,8 +445,9 @@ class AgentService:
                    "price": str(px) if order_type == "limit" else None, "est_price": str(px),
                    "leverage": leverage, "reduce_only": reduce_only,
                    "slippage": str(slip) if slip is not None else None}
-        if leverage_note:
-            summary["note"] = leverage_note
+        book_note = self._thin_book_note(m, side, slip) if order_type == "market" else None
+        if leverage_note or book_note:
+            summary["note"] = " ".join(n for n in (leverage_note, book_note) if n)
         key = "|".join(str(summary[k]) for k in ("symbol", "side", "type", "size", "price", "leverage", "reduce_only"))
 
         if not decision.allowed:
@@ -659,7 +689,12 @@ class AgentService:
         if action == "hedge":
             p = self.hedge_exposure(symbol, rule["spot_amount"], rule["hedge_ratio"], dry_run=True,
                                     reason=f"preview for protection rule {rule_id}")
-            preview = {k: p.get(k) for k in ("status", "order", "hedge_plan", "message") if p.get(k) is not None}
+            preview = {k: p.get(k) for k in ("status", "order", "hedge_plan") if p.get(k) is not None}
+            book = next((n for n in [(p.get("order") or {}).get("note") or ""] if "likely be cancelled" in n), None)
+            if book:
+                book = book[book.index("Strike's best"):]
+                preview["book_warning"] = book
+                self.journal.update_approval(approval_id, book_warning=book)
             if p.get("guardrails"):
                 preview["guardrails_now"] = {k: p["guardrails"].get(k) for k in ("allowed", "violations")}
             if p.get("status") == "blocked":
@@ -676,6 +711,9 @@ class AgentService:
             "preview_at_current_price": preview,
             "message": (("At today's price the guardrails would block this hedge, so the rule would fire and be "
                          "blocked. Tell the user before they arm it. " if preview and preview.get("status") == "blocked"
+                         else "") +
+                        ("Strike's order book is far from the mark on this market, so the hedge would likely be "
+                         "cancelled for slippage if it fired now. Tell the user. " if preview and preview.get("book_warning")
                          else "") +
                         "Waiting for the user to arm this rule in their dashboard; you cannot arm it. Once armed, "
                         "the kit watches the price and acts by itself, once, within the guardrails. "
