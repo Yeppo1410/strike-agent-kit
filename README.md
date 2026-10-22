@@ -176,13 +176,15 @@ Then ask something like: *"Which Strike market has the best funding edge vs Hype
 
 ## Testnet and mainnet
 
-The kit runs on both. Testnet is the safe default for building and demos; mainnet is locked behind an explicit opt-in. `DEMO.md` walks through both.
+The kit runs on both. Testnet is the safe default for building and demos; mainnet is locked behind an explicit opt-in.
 
 1. Create an account on Strike testnet and fund it. Testnet deposits are in ADA and need a connected Cardano wallet; an email login can't deposit there. Test ADA comes from the Cardano testnet faucet.
 2. Create an API wallet on the API Wallets page. Alternatively, run `python -m strike_agent_kit.signing` to generate a key pair locally and register the public key there.
 3. Copy `.env.example` to `.env`, then set `STRIKE_MODE=testnet` and both keys.
 4. Run `python scripts/testnet_check.py`. It checks the clock sync, signing and account reads, and places no orders.
 5. Run `STRIKE_MODE=testnet python scripts/demo_walkthrough.py`, or connect Claude Desktop.
+
+On testnet, use BTC or ETH for market orders. The ADA and SOL testnet order books can sit far from the mark price (about 20% on 22 October 2026), so market orders there get cancelled for slippage. The kit warns about this in every order preview.
 
 Mainnet is locked unless you also set `STRIKE_ALLOW_MAINNET=1`. For a small mainnet run, point `STRIKE_GUARDRAILS` at `guardrails.mainnet.json`, which allows 3x leverage, $150 per order and a $15 daily loss limit.
 
