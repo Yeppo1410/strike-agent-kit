@@ -172,7 +172,7 @@ Run `python scripts/claude_desktop_config.py`. It prints the config entry with t
 }
 ```
 
-Then ask something like: *"Which Strike market has the best funding edge vs Hyperliquid right now? I hold 3,000 ADA, hedge it on Strike."*
+Then ask something like: *"Which Strike market has the best funding edge vs Hyperliquid right now? I hold 0.05 ETH, hedge it on Strike."*
 
 ## Testnet and mainnet
 
