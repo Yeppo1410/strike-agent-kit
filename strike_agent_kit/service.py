@@ -260,7 +260,7 @@ class AgentService:
                             "new risk would be blocked, closes still allowed.")
         unhedged = [r for r in spot_rows if "hedged_pct" in r and r["hedged_pct"] < 50 and r["pnl_usd"] < 0]
         for r in unhedged:
-            warnings.append(f"{r['asset']} spot is {r['hedged_pct']}% hedged; hedge_exposure can cover it.")
+            warnings.append(f"{r['asset']} spot is {r['hedged_pct']}% hedged; request_hedge can prepare a hedge for the user to execute.")
         if coll and collateral_pnl < 0 and any(r.get("asset") == coll["asset"] for r in spot_rows):
             warnings.append(f"Margin is held in {coll['asset']}, which adds to the same exposure as the spot holding.")
         if coll and not tracked:
@@ -388,7 +388,10 @@ class AgentService:
                     price: float | str | None = None, leverage: int | None = None,
                     reduce_only: bool = False, slippage: float | str | None = None,
                     dry_run: bool = False, confirmation_token: str | None = None,
-                    reason: str | None = None, _approved_by_human: bool = False) -> dict[str, Any]:
+                    reason: str | None = None, _approved_by_human: bool = False,
+                    _request_only: bool = False, _close: bool = False) -> dict[str, Any]:
+        """_request_only: the caller is the agent (MCP). Nothing is executed then: a non-preview call always
+        becomes an approval card, and only the human's click in the dashboard sends it to Strike."""
         symbol = self.normalize_symbol(symbol)
         side = side.strip().lower()
         order_type = order_type.strip().lower()
@@ -455,11 +458,13 @@ class AgentService:
             return {"status": "blocked", "order": summary, "guardrails": decision.to_dict(),
                     "message": "Blocked by guardrails. Tell the user which limit was hit; do not try to work around it."}
 
-        needs_human = (policy.require_human_approval and decision.risk_increasing and not _approved_by_human
-                       and decision.order_notional_usd >= policy.auto_approve_below_usd)
+        needs_human = not _approved_by_human and (_request_only or (
+            policy.require_human_approval and decision.risk_increasing
+            and decision.order_notional_usd >= policy.auto_approve_below_usd))
         if needs_human and not dry_run:
             approval_id = self.journal.add_approval({
                 "order": summary, "notional_usd": _f(decision.order_notional_usd, 2), "reason": reason,
+                "close": _close,
                 "args": {"symbol": symbol, "side": side, "size": str(sz), "order_type": order_type,
                          "price": summary["price"], "leverage": leverage, "reduce_only": reduce_only,
                          "slippage": summary["slippage"]},
@@ -468,21 +473,23 @@ class AgentService:
                              decision=decision.to_dict(), reason=reason)
             return {"status": "pending_approval", "approval_id": approval_id, "order": summary,
                     "guardrails": decision.to_dict(),
-                    "message": "Waiting for the user to approve this order in their Strike Agent Kit dashboard. "
-                               "You cannot approve it yourself. Tell the user it is waiting, and use "
-                               "get_order_status with this approval_id to see the outcome. Do not resubmit."}
+                    "message": "Sent to the user's Strike Agent Kit dashboard. Nothing has been traded: the user "
+                               "reviews it there and executes it with one click, or rejects it. You cannot approve "
+                               "it. Tell the user it is waiting for them, and use get_order_status with this "
+                               "approval_id to see the outcome. Do not resubmit."}
 
         # The confirmation-token flow only applies when human approval is switched off, and never to
         # an order the human already approved (an approval card or an armed protection rule).
-        use_token = decision.needs_confirmation and not policy.require_human_approval and not _approved_by_human
+        use_token = (decision.needs_confirmation and not policy.require_human_approval and not _approved_by_human
+                     and not _request_only)
         if dry_run or (use_token and not (
                 confirmation_token and self.journal.redeem_token(confirmation_token, key))):
             token = self.journal.issue_token(key) if use_token else None
             status = "preview" if dry_run else "needs_confirmation"
             self.journal.log(f"order_{status}", order=summary, decision=decision.to_dict(), reason=reason)
             msg = (("Preview only, nothing was sent." + (
-                       " If the user wants it, place it with dry_run=false; it will then wait for their approval "
-                       "in the dashboard." if needs_human else "")) if dry_run else
+                       " If the user wants it, send it to their dashboard with dry_run=false; they execute it "
+                       "there with one click." if needs_human else "")) if dry_run else
                    "This order is above the confirmation threshold. Show it to the user and only resend "
                    "with confirmation_token after they explicitly approve.")
             return {"status": status, "order": summary, "guardrails": decision.to_dict(),
@@ -544,7 +551,7 @@ class AgentService:
             time.sleep(0.4)
 
     def close_position(self, symbol: str, dry_run: bool = False, reason: str | None = None,
-                       slippage: float | str | None = None) -> dict[str, Any]:
+                       slippage: float | str | None = None, _request_only: bool = False) -> dict[str, Any]:
         """Reduce-only market close. If the exchange rejects it for slippage, retry once at the
         policy's close_max_slippage; if that also fails, say plainly that the market is too thin."""
         symbol = self.normalize_symbol(symbol)
@@ -562,9 +569,12 @@ class AgentService:
         def attempt(slip: D) -> dict[str, Any]:
             return self.place_order(symbol, "sell" if size > 0 else "buy", size=str(abs(size)),
                                     reduce_only=True, slippage=str(slip), dry_run=dry_run,
-                                    reason=reason or "close_position")
+                                    reason=reason or "close_position", _request_only=_request_only,
+                                    _close=_request_only)
 
         res = attempt(first)
+        if _request_only:  # the human executes it; on approval the close (with its retry) runs then
+            return res
         if dry_run or not _slippage_rejected(res):
             return res
         if first < cap:
@@ -580,7 +590,8 @@ class AgentService:
 
     def hedge_exposure(self, asset: str, spot_amount: float | str, hedge_ratio: float | str = 1.0,
                        dry_run: bool = False, confirmation_token: str | None = None,
-                       reason: str | None = None, _approved_by_human: bool = False) -> dict[str, Any]:
+                       reason: str | None = None, _approved_by_human: bool = False,
+                       _request_only: bool = False) -> dict[str, Any]:
         """Bring the perp position to -(spot_amount * hedge_ratio)."""
         symbol = self.normalize_symbol(asset)
         ratio = D(str(hedge_ratio))
@@ -603,7 +614,7 @@ class AgentService:
         res = self.place_order(symbol, "buy" if delta > 0 else "sell", size=str(abs(delta)),
                                reduce_only=reducing, dry_run=dry_run, confirmation_token=confirmation_token,
                                reason=reason or f"hedge {spot_amount} {asset} at ratio {ratio}",
-                               _approved_by_human=_approved_by_human)
+                               _approved_by_human=_approved_by_human, _request_only=_request_only)
         res["hedge_plan"] = plan
         return res
 
@@ -872,9 +883,13 @@ class AgentService:
             self.journal.log("order_rejected_by_human", approval_id=approval_id, order=a["order"], reason=a.get("reason"))
             return {"status": "rejected"}
         self.journal.update_approval(approval_id, status="approved", decided=time.time())
-        # Re-run the full pipeline: prices, positions or the kill switch may have changed since the request.
-        result = self.place_order(**a["args"], dry_run=False, reason=a.get("reason"), _approved_by_human=True)
-        final = {"submitted": "executed", "blocked": "blocked_on_approval"}.get(result["status"], "failed")
+        if a.get("close"):
+            # Close whatever is open now (with the slippage retry); closing is never blocked.
+            result = self.close_position(a["args"]["symbol"], reason=a.get("reason"))
+        else:
+            # Re-run the full pipeline: prices, positions or the kill switch may have changed since the request.
+            result = self.place_order(**a["args"], dry_run=False, reason=a.get("reason"), _approved_by_human=True)
+        final = {"submitted": "executed", "blocked": "blocked_on_approval", "noop": "noop"}.get(result["status"], "failed")
         self.journal.update_approval(approval_id, status=final,
                                      result={k: result.get(k) for k in ("status", "exchange_status", "filled",
                                                                         "avg_price", "close_reason", "error")

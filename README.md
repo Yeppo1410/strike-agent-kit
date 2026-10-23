@@ -59,10 +59,10 @@ It uses Strike's API wallets, which can trade but cannot withdraw. Even a misbeh
 | `get_account` | Equity, available balance, positions, today's PnL against the daily loss limit, and the kill switch state |
 | `get_markets` | Mark price, funding, max leverage and size rules per market |
 | `what_if` | "What happens if ADA drops 20%?" Re-prices your positions, spot holdings outside Strike and (optionally) ADA-denominated margin. Shows PnL, equity, the maintenance-margin buffer, whether the daily loss limit would trip, and how well your spot is hedged. Read-only. |
-| `hedge_exposure` | "I hold 3,000 ADA, keep me hedged." Moves the perp position to −spot × ratio and trades only the difference. |
-| `place_order` | Market and limit orders. Defaults to preview (`dry_run=true`). New risk then waits for your approval. |
+| `request_hedge` | "I hold 3,000 ADA, keep me hedged." Prepares moving the perp position to −spot × ratio (only the difference is traded). Preview first; then it becomes a card in your dashboard that you execute. |
+| `request_order` | Market and limit orders. Preview by default (`dry_run=true`); with `dry_run=false` it becomes a card in your dashboard. **The agent never executes a trade:** Strike only gets the order when you click Approve. |
 | `get_order_status` | Outcome of a request that was waiting for you: pending, executed, rejected, expired, or blocked on approval (orders); pending, applied, rejected or expired (guardrail changes) |
-| `close_position` | Reduce-only close. Always allowed. If the book is too thin for 0.5% slippage it retries once at `close_max_slippage`, then tells you plainly instead of looping. |
+| `request_close` | Prepares a reduce-only close, which you execute in the dashboard. Never blocked by limits or the kill switch. On execution, if the book is too thin for 0.5% slippage it retries once at `close_max_slippage`, then tells you plainly instead of looping. |
 | `cancel_open_orders` | Cancels open orders on all markets or on one market |
 | `propose_guardrail_change` | Change a limit. **Tightening applies at once; loosening waits for your click in the dashboard.** "Lower my daily loss limit to $100" takes effect now; "raise it to $500" becomes an approval card. |
 | `propose_protection_rule` | "If ADA drops below $0.20, hedge my 5,000 ADA" or "if SOL falls under $90, close my long". The agent proposes; **you arm it once** in the dashboard; the kit then watches the mark price and fires the action by itself, at most once, through the normal guardrails. |
@@ -94,14 +94,14 @@ It uses Strike's API wallets, which can trade but cannot withdraw. Even a misbeh
 
 Design rules:
 
-- **Reducing risk is always allowed.** With the kill switch on, or after the daily loss limit is hit, the agent can still close and reduce positions. It can never be locked into a losing position.
+- **The agent prepares, you execute.** The agent-facing order tools (`request_order`, `request_hedge`, `request_close`) never send anything to Strike. They preview, or they put a request in your dashboard; only your click there executes it. This holds whatever the policy file says, so `auto_approve_below_usd` and the confirmation-token fallback below only apply to code that calls the service directly, never to an agent. The one thing that trades without a fresh click is a protection rule you armed yourself.
+- **Reducing risk is always allowed.** With the kill switch on, or after the daily loss limit is hit, a close is never blocked. You can never be locked into a losing position.
 - **Leverage is capped automatically.** New risk never opens at the account's default leverage if that is above the policy. The kit lowers it first and says so.
 - **The human approves new risk, outside the chat.** With `require_human_approval` on (the default), every order that opens or adds risk is parked as *pending* and appears as a card in the dashboard. Only a click there sends it to Strike. No MCP tool can approve. This is what stops a misread chat or a prompt injection from becoming a trade.
   - On approval the whole pipeline runs again. If the kill switch was pulled or a limit is now hit, the order is blocked even though you approved it.
   - Requests expire after 15 minutes.
-  - `auto_approve_below_usd` lets small orders through without a click if you want that convenience.
-  - Closing and reducing positions never wait.
-- **Fallback when approval mode is off:** orders above `confirm_above_usd` need a single-use, order-bound confirmation token that expires after 5 minutes, and the agent must get your yes in the chat first.
+  - Closes wait for your click too, but are never blocked.
+- **For scripts that call the service directly** (not the agent): `auto_approve_below_usd` lets small orders through without a click, and with approval mode off, orders above `confirm_above_usd` need a single-use, order-bound confirmation token that expires after 5 minutes.
 - **The agent can tighten limits, never loosen them.** `propose_guardrail_change` applies a stricter value at once (lower caps or leverage, a lower loss limit, fewer markets, approval switched on). Anything looser becomes an approval card in the dashboard, like an order. A proposal that mixes both applies the tighter part and queues the rest.
   - Switching the daily loss limit off (`0`) or allowing every market (`[]`) counts as loosening.
   - Changes to `close_max_slippage` and `allowed_order_types` always wait for you, in either direction, because a "stricter" value there could stop you from closing a position in a thin market.

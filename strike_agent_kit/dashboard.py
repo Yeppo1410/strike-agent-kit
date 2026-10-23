@@ -381,7 +381,7 @@ async function state(){
       <button class="ok" data-id="${a.id}" data-act="approve">Approve</button></div></div>`;
     const o = a.order;
     return `<div class="ap"><div>
-      <div class="tag">Agent wants to trade · waiting for you · expires in ${mins} min</div>
+      <div class="tag">${a.close ? "Agent prepared a close" : "Agent prepared a trade"} · nothing is sent until you approve · expires in ${mins} min</div>
       <h3>${o.side === "buy" ? "Buy" : "Sell"} ${esc(o.size)} ${esc(o.symbol.replace("-USD",""))} · ${usd(a.notional_usd)}</h3>
       <div class="meta mono">${esc(o.type)}${o.price ? " @ " + esc(o.price) : " ~" + esc(o.est_price)}${o.leverage ? " · " + esc(o.leverage) + "x" : ""}${o.reduce_only ? " · reduce-only" : ""}</div>
       ${a.reason ? `<div class="why">Agent's reason: “${esc(a.reason)}”</div>` : ""}

@@ -67,21 +67,21 @@ async def main() -> None:
             show("2. Account before", await s.call_tool("get_account", {}))
 
             show("3. Hedge 3,000 ADA (preview)", await s.call_tool(
-                "hedge_exposure", {"asset": "ADA", "spot_amount": 3000, "reason": "user holds 3,000 ADA spot"}))
+                "request_hedge", {"asset": "ADA", "spot_amount": 3000, "reason": "user holds 3,000 ADA spot"}))
             req = show("4. User says go -> order waits for approval in the dashboard", await s.call_tool(
-                "hedge_exposure", {"asset": "ADA", "spot_amount": 3000, "dry_run": False,
+                "request_hedge", {"asset": "ADA", "spot_amount": 3000, "dry_run": False,
                                    "reason": "user asked to hedge 3,000 ADA"}))
             human_clicks(req["approval_id"], "approve")
             show("4b. Agent checks the outcome", await s.call_tool(
                 "get_order_status", {"approval_id": req["approval_id"]}))
 
             casual = show("4c. Casual remark mis-read as a trade -> it only waits; human rejects", await s.call_tool(
-                "place_order", {"symbol": "BTC", "side": "buy", "notional_usd": 300, "dry_run": False,
+                "request_order", {"symbol": "BTC", "side": "buy", "notional_usd": 300, "dry_run": False,
                                 "reason": "user said BTC looks strong"}))
             human_clicks(casual["approval_id"], "reject")
 
-            show("5. Agent tries to go big: 10x leverage, $4,000 SOL short", await s.call_tool(
-                "place_order", {"symbol": "SOL", "side": "sell", "notional_usd": 4000, "leverage": 10,
+            show("5. Agent tries to go big: 10x leverage, $4,000 SOL short (blocked before it reaches you)", await s.call_tool(
+                "request_order", {"symbol": "SOL", "side": "sell", "notional_usd": 4000, "leverage": 10,
                                 "dry_run": False, "reason": "capture SOL funding spread"}))
 
             rule = show("5a. 'If ADA drops below $0.65, cover all 5,000 of my ADA' -> rule waits for the human",
@@ -115,8 +115,11 @@ async def main() -> None:
             show("6. Engage kill switch", await s.call_tool(
                 "engage_kill_switch", {"reason": "demo: user wants to stop new risk"}))
             show("7. New risk is blocked", await s.call_tool(
-                "place_order", {"symbol": "BTC", "side": "buy", "notional_usd": 200, "dry_run": False}))
-            show("8. Closing still works", await s.call_tool("close_position", {"symbol": "ADA"}))
+                "request_order", {"symbol": "BTC", "side": "buy", "notional_usd": 200, "dry_run": False}))
+            close = show("8. Closing still works: request -> human executes it, despite the kill switch",
+                         await s.call_tool("request_close", {"symbol": "ADA", "reason": "user asked to close the ADA hedge"}))
+            human_clicks(close["approval_id"], "approve")
+            show("8b. Outcome", await s.call_tool("get_order_status", {"approval_id": close["approval_id"]}))
             show("9. Audit log", await s.call_tool("get_action_log", {"limit": 10}))
 
 
