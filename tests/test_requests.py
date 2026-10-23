@@ -48,3 +48,15 @@ def test_close_request_retries_on_thin_book_when_executed(svc):  # noqa: F811
     req = svc.close_position("ADA", _request_only=True)
     out = svc.decide_approval_by_human(req["approval_id"], True)
     assert out["status"] == "executed" and out["result"].get("retried_with_slippage") == "0.03"
+
+
+def test_data_folder_moved_away_while_running(svc, tmp_path):  # noqa: F811
+    import shutil
+    data = tmp_path / "data"
+    svc.journal.journal_path, svc.journal.state_path = data / "journal.jsonl", data / "state.json"
+    data.mkdir()
+    svc.get_account()
+    shutil.move(str(data), str(tmp_path / "moved-away"))
+    svc.get_account()  # recreates the folder instead of failing
+    assert svc.place_order("ADA", "sell", notional_usd=100, dry_run=True)["status"] == "preview"
+    assert (data / "journal.jsonl").is_file()

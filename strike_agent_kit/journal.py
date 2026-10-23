@@ -26,6 +26,7 @@ class Journal:
     # ---- action log ------------------------------------------------------
     def log(self, event: str, **data: Any) -> dict[str, Any]:
         entry = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event, **data}
+        self.journal_path.parent.mkdir(parents=True, exist_ok=True)  # survives the folder being moved away
         with self.journal_path.open("a") as f:
             f.write(json.dumps(entry, default=_default) + "\n")
         return entry
@@ -43,6 +44,7 @@ class Journal:
         return {}
 
     def _write_state(self, state: dict[str, Any]) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps(state, indent=2, default=_default))
 
     def day_pnl(self, equity: D, wallet: D | None = None, positions: dict[str, D] | None = None,
